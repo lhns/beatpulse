@@ -77,6 +77,26 @@ If Daslight reports zero peers:
 - Allow multicast through Windows Defender (private network profile).
 - Disable VPN clients that block multicast.
 
+## Known limitations
+
+- **Resize via host chrome doesn't work; use the in-canvas drag handle.**
+  The editor has a drag-handle in its bottom-right corner — drag that
+  to grow the window. Dragging the host's plugin-window border may
+  show a resize cursor but the plugin contents stay put. This is an
+  upstream nih-plug limitation (`Editor` trait has no `on_size`
+  callback yet); see `docs/adr/0022-host-driven-resize-unsupported.md`.
+- **Resize is more space, not bigger UI.** Fonts and widget heights
+  stay constant; the level meter, sliders, and grids stretch to fill
+  the new width. If you want larger fonts, configure your host's
+  per-plugin DPI scaling.
+- **Single-instance Link.** Only enable Ableton Link on one BeatPulse
+  instance per session — multiple instances fight over the session
+  tempo (last write wins). See `docs/adr/0012`.
+- **Beat-tracking accuracy depends on input cleanliness.** Designed for
+  isolated rhythmic sources (kick bus, drum loop). On full-mix audio,
+  the PLL may lock to a sub-rhythm rather than the perceived downbeat.
+  See `docs/adr/0003`.
+
 ## Architecture
 
 See `BeatPulse-SPEC.md` and `docs/adr/`.

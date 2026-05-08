@@ -116,6 +116,24 @@ pub fn build_panel_with(
     setter: &ParamSetter,
     options: PanelOptions,
 ) {
+    // ResizableWindow strips the CentralPanel inner_margin in its
+    // internal layout (it uses ui.clip_rect() for the content area).
+    // Re-add explicit padding here so the production editor doesn't have
+    // content butting up against the window edges.
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            build_panel_body(ui, params, shared, setter, options);
+        });
+}
+
+fn build_panel_body(
+    ui: &mut egui::Ui,
+    params: &BeatpulseParams,
+    shared: &SharedState,
+    setter: &ParamSetter,
+    options: PanelOptions,
+) {
     let egui_ctx = ui.ctx().clone();
 
     // Header

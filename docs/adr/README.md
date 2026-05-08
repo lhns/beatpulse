@@ -28,3 +28,4 @@ a new ADR; existing ADRs are not edited except to mark them Superseded.
 | 0019 | [egui_kittest for UI snapshot testing](0019-egui-kittest-for-ui-snapshots.md) | Accepted          |
 | 0020 | [Editor window is host-resizable](0020-resizable-editor.md) | Accepted          |
 | 0021 | [Resize gives space, doesn't scale UI](0021-resize-not-scale.md) | Accepted          |
+| 0022 | [Host-driven editor resize is unsupported pending nih-plug fix](0022-host-driven-resize-unsupported.md) | Accepted          |
