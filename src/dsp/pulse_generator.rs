@@ -118,7 +118,12 @@ impl PulseGenerator {
         let absolute_index =
             self.beat_counter.saturating_mul(self.pulse_rate as i64) + within_beat_index;
 
-        if absolute_index != self.last_pulse_index {
+        // Fire only on monotonic forward progress. Backward jumps in
+        // `absolute_index` (caused by `BeatPll::on_onset` pulling phase
+        // backward across a within-beat boundary) are silent — the next
+        // forward progression past `last_pulse_index` re-fires the next
+        // real pulse. See ADR-0025.
+        if absolute_index > self.last_pulse_index {
             self.last_pulse_index = absolute_index;
             // Per spec §5.3 / §5.4: after a reset (`last_pulse_index = i64::MIN`),
             // the first pulse fires on the first non-silent sample.

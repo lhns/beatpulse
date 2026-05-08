@@ -250,3 +250,89 @@ fn g13_beat_boundary_flag() {
         );
     }
 }
+
+/// G14: a phase correction that pushes the PLL phase BACKWARD across a
+/// within-beat-index boundary must not fire a spurious pulse. See
+/// ADR-0025. This is the bug that made the BEAT LED double-blink within
+/// a single beat: phase moved past a within-beat boundary (firing
+/// correctly), then an onset corrected it back across the boundary,
+/// firing a spurious pulse with `is_beat_boundary == true`.
+#[test]
+fn g14_backward_phase_correction_no_extra_pulse() {
+    use beatpulse::dsp::pulse_generator::PulseEvent;
+
+    const PERIOD: f64 = 44_100.0; // 60 BPM
+    const PPQN: u32 = 4;
+    const PULSE_INTERVAL: f64 = PERIOD / PPQN as f64; // 11025
+
+    let mut pll = BeatPll::new(SR);
+    pll.period_samples = PERIOD;
+    pll.phase_samples = 0.0;
+    pll.alpha_period = 0.0; // freeze period — only test phase corrections
+    pll.alpha_phase = 0.165;
+
+    // Seed the PLL with two prior onsets so subsequent on_onset calls
+    // exercise the phase-correction path (not cold-start snap).
+    pll.on_onset(0.0);
+    pll.on_onset(PERIOD);
+
+    let mut gen = PulseGenerator::new(PPQN);
+    gen.reset();
+
+    // Drive forward to just past the first within-beat boundary
+    // (sample 11025). Collect events.
+    let mut events: Vec<PulseEvent> = Vec::new();
+    let to_first = (PULSE_INTERVAL as u32) + 5; // 11030 samples
+    gen.process_block(&mut pll, to_first, |ev| events.push(ev));
+
+    // We expect 2 pulses: the reset-fire at sample 0 (within=0) and
+    // the boundary at sample ~11025 (within=1).
+    assert_eq!(
+        events.len(),
+        2,
+        "expected 2 pulses pre-onset, got {}",
+        events.len()
+    );
+    assert!(events[0].is_beat_boundary);
+    assert!(!events[1].is_beat_boundary);
+    assert!(pll.phase_samples > PULSE_INTERVAL);
+
+    // Now inject an onset at this position. With err = phase ≈ 11030
+    // and α_phase = 0.165, the correction is ~1820 samples backward,
+    // so phase ends up around 9210 — back inside within_beat_index = 0.
+    // The "absolute sample" is whatever — only the relative phase matters
+    // for the correction. Use last + something < period so the resulting
+    // observed_period stays in-range.
+    let abs_sample = pll.last_onset_sample.unwrap() + PULSE_INTERVAL;
+    pll.on_onset(abs_sample);
+    assert!(
+        pll.phase_samples < PULSE_INTERVAL,
+        "expected backward correction across the boundary; phase = {}",
+        pll.phase_samples
+    );
+
+    // Pre-fix: a spurious pulse with is_beat_boundary=true would fire
+    // here (the BEAT LED double-blink). Post-fix: silent.
+    let mut after = Vec::new();
+    gen.process_block(&mut pll, 1, |ev| after.push(ev));
+    assert!(
+        after.is_empty(),
+        "spurious pulse fired after backward phase correction: {:?}",
+        after
+    );
+
+    // Continue advancing far enough to cross the next pulse boundary
+    // at phase ≈ 22050 (within_beat_index = 2). From the corrected
+    // phase ≈ 9210 we need ≥ 12840 samples to cross. 13000 lands at
+    // ~22210 (within = 2) without yet reaching 33075 (within = 3),
+    // so exactly one pulse should fire.
+    let mut more = Vec::new();
+    gen.process_block(&mut pll, 13000, |ev| more.push(ev));
+    assert_eq!(
+        more.len(),
+        1,
+        "expected exactly one pulse after the boundary, got {}",
+        more.len()
+    );
+    assert!(!more[0].is_beat_boundary);
+}

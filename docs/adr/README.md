@@ -31,3 +31,4 @@ a new ADR; existing ADRs are not edited except to mark them Superseded.
 | 0022 | [Host-driven editor resize is unsupported pending nih-plug fix](0022-host-driven-resize-unsupported.md) | Accepted          |
 | 0023 | [Latency offset is user-tunable, not auto-detected](0023-latency-offset-user-tunable.md) | Accepted          |
 | 0024 | [Tempo stability is its own parameter, decoupled from Sensitivity](0024-tempo-stability-separate-param.md) | Accepted          |
+| 0025 | [Pulse firing requires monotonic forward progress](0025-pulse-firing-monotonic.md) | Accepted          |
