@@ -22,3 +22,7 @@ a new ADR; existing ADRs are not edited except to mark them Superseded.
 | 0013 | [pluginval as the primary plugin validator](0013-pluginval-as-primary-validator.md) | Accepted          |
 | 0014 | [Ballroom Dataset for beat-detection evaluation](0014-ballroom-dataset-for-beat-detection-eval.md) | Accepted          |
 | 0015 | [In-process Link listener test on top of manual LinkHut procedure](0015-link-integration-test-via-rusty-link-listener.md) | Accepted          |
+| 0016 | [BeatPLL cold-starts by snapping to the first observed period](0016-beat-pll-cold-start-snap.md) | Accepted          |
+| 0017 | [PulseGenerator wrap detection requires a drop greater than half a period](0017-pulse-generator-wrap-threshold.md) | Accepted          |
+| 0018 | [UI indicator LED reflects beats, not PPQN pulses](0018-beat-led-not-pulse-led.md) | Accepted          |
+| 0019 | [egui_kittest for UI snapshot testing](0019-egui-kittest-for-ui-snapshots.md) | Accepted          |
