@@ -28,6 +28,11 @@ approx = "0.5"
 hound = "3"           # WAV decode for dataset harness
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# UI snapshot testing. Feature-gated at the test-file level (not Cargo
+# feature) because dev-dependencies cannot be marked optional in stable
+# Cargo. Pays a one-time wgpu compile cost on `cargo test` builds.
+egui_kittest = { version = "0.31", features = ["wgpu", "snapshot"] }
+image = "0.25"
 
 [features]
 default = []
