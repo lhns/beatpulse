@@ -137,7 +137,8 @@ pub fn build_panel_with(
         ui.label(
             RichText::new("BPM")
                 .color(Color32::from_rgb(140, 145, 150))
-                .size(12.0),
+                .size(12.0)
+                .strong(),
         );
         ui.add_space(12.0);
         ui.vertical(|ui| {
@@ -218,12 +219,19 @@ pub fn build_panel_with(
 
     ui.add_space(6.0);
     section_header(ui, "Detection");
+    // Reserve space for the label column (~110 px) AND the value-pill
+    // that ParamSlider draws to the right of the slider itself (~70 px).
+    let slider_w = (ui.available_width() - 200.0).max(160.0);
     egui::Grid::new("detection-grid")
         .num_columns(2)
         .spacing([12.0, 6.0])
+        .min_col_width(110.0)
         .show(ui, |ui| {
             ui.label("Sensitivity");
-            ui.add(nih_widgets::ParamSlider::for_param(&params.sensitivity, setter));
+            ui.add(
+                nih_widgets::ParamSlider::for_param(&params.sensitivity, setter)
+                    .with_width(slider_w),
+            );
             ui.end_row();
 
             ui.label("Onset method");
@@ -231,17 +239,17 @@ pub fn build_panel_with(
             ui.end_row();
 
             ui.label("Silence threshold");
-            ui.add(nih_widgets::ParamSlider::for_param(
-                &params.silence_threshold,
-                setter,
-            ));
+            ui.add(
+                nih_widgets::ParamSlider::for_param(&params.silence_threshold, setter)
+                    .with_width(slider_w),
+            );
             ui.end_row();
 
             ui.label("Silence release");
-            ui.add(nih_widgets::ParamSlider::for_param(
-                &params.silence_release,
-                setter,
-            ));
+            ui.add(
+                nih_widgets::ParamSlider::for_param(&params.silence_release, setter)
+                    .with_width(slider_w),
+            );
             ui.end_row();
         });
 
@@ -325,10 +333,10 @@ pub fn build_panel_with(
                     ui.end_row();
 
                     ui.label("Length (ms)");
-                    ui.add(nih_widgets::ParamSlider::for_param(
-                        &params.note_length_ms,
-                        setter,
-                    ));
+                    ui.add(
+                        nih_widgets::ParamSlider::for_param(&params.note_length_ms, setter)
+                            .with_width(slider_w),
+                    );
                     ui.end_row();
                 });
         });
@@ -350,10 +358,8 @@ pub fn build_panel_with(
 fn section_header(ui: &mut egui::Ui, text: &str) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        // Coloured tick before the heading text — gives each section a
-        // visible anchor without a heavy separator above it.
         let (rect, _) = ui.allocate_exact_size(
-            egui::Vec2::new(3.0, 14.0),
+            egui::Vec2::new(3.0, 13.0),
             egui::Sense::hover(),
         );
         ui.painter().rect_filled(rect, 1.0, ACCENT);
