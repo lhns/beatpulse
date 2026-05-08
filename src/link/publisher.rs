@@ -21,6 +21,10 @@ pub struct LinkPublisher {
     /// Reused on the audio thread; constructed once.
     session_state: SessionState,
     last_published_bpm: f64,
+    /// The Link clock-time (microseconds) we passed to the most recent
+    /// successful `set_tempo` call. Exposed for testing the latency-offset
+    /// path (per ADR-0023).
+    pub last_committed_at_micros: Option<i64>,
 }
 
 impl LinkPublisher {
@@ -32,6 +36,7 @@ impl LinkPublisher {
             link,
             session_state: SessionState::new(),
             last_published_bpm: initial_bpm,
+            last_committed_at_micros: None,
         }
     }
 
@@ -68,6 +73,7 @@ impl LinkPublisher {
         self.session_state.set_tempo(current_bpm, micros);
         self.link.commit_audio_session_state(&self.session_state);
         self.last_published_bpm = current_bpm;
+        self.last_committed_at_micros = Some(micros);
     }
 
     /// Read the current session tempo (e.g. for UI display).
@@ -122,5 +128,63 @@ mod tests {
         assert!(!p.is_enabled());
         p.set_enabled(true);
         assert!(p.is_enabled());
+    }
+
+    /// Latency-offset = 0 → committed timestamp matches `clock_micros()`
+    /// at call time (within ~1 ms slop for the small instructions
+    /// between). Locks in the contract from ADR-0023 that the offset
+    /// passes through.
+    #[test]
+    fn publish_with_zero_offset_uses_clock_micros() {
+        let mut p = LinkPublisher::new(120.0);
+        let before = p.link.clock_micros();
+        p.publish_tempo(124.5, 0);
+        let after = p.link.clock_micros();
+        let committed = p
+            .last_committed_at_micros
+            .expect("expected commit to set last_committed_at_micros");
+        // committed should be in [before, after].
+        assert!(
+            committed >= before && committed <= after,
+            "committed={committed} not in [{before}, {after}]"
+        );
+    }
+
+    /// Positive offset shifts the timestamp forward by the requested
+    /// amount.
+    #[test]
+    fn publish_with_positive_offset_shifts_timestamp() {
+        let mut p = LinkPublisher::new(120.0);
+        let offset_us: i64 = 50_000; // +50 ms
+        let before = p.link.clock_micros();
+        p.publish_tempo(126.0, offset_us);
+        let after = p.link.clock_micros();
+        let committed = p.last_committed_at_micros.unwrap();
+        // committed should be in [before + offset, after + offset].
+        assert!(
+            committed >= before + offset_us && committed <= after + offset_us,
+            "committed={committed} not in [{}, {}] (offset={offset_us})",
+            before + offset_us,
+            after + offset_us
+        );
+    }
+
+    /// Negative offset shifts the timestamp backward — the use case for
+    /// latency compensation (DMX fires earlier than the predicted beat
+    /// sample to align with the perceptually-delayed audio).
+    #[test]
+    fn publish_with_negative_offset_shifts_timestamp() {
+        let mut p = LinkPublisher::new(120.0);
+        let offset_us: i64 = -30_000; // -30 ms
+        let before = p.link.clock_micros();
+        p.publish_tempo(128.0, offset_us);
+        let after = p.link.clock_micros();
+        let committed = p.last_committed_at_micros.unwrap();
+        assert!(
+            committed >= before + offset_us && committed <= after + offset_us,
+            "committed={committed} not in [{}, {}] (offset={offset_us})",
+            before + offset_us,
+            after + offset_us
+        );
     }
 }
