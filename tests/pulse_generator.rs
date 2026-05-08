@@ -132,3 +132,84 @@ fn g11_first_pulse_after_silence() {
     gen.process_block(&mut pll, 1, |ev| after.push(ev.sample_offset));
     assert_eq!(after, vec![0]);
 }
+
+/// G12: onset-driven phase corrections must NOT produce phantom pulses.
+///
+/// `BeatPll::on_onset` legitimately reduces `phase_samples` (it's the
+/// mechanism by which the PLL phase-locks). The PulseGenerator's wrap
+/// detection must distinguish that small backward correction from a real
+/// natural wrap-around at the end of a beat.
+///
+/// Methodology: run two passes against the same PLL period and compare
+/// pulse counts. The "control" pass advances phase only (no onsets). The
+/// "perturbed" pass injects onsets at each beat + 50 samples (each onset
+/// pulls phase backward by ≤ alpha_phase × 50 ≈ 8 samples). Phase
+/// corrections shift pulse positions slightly forward in time but must
+/// not create or skip pulses. Counts must match.
+#[test]
+fn g12_onset_corrections_no_phantom_pulses() {
+    use beatpulse::dsp::pulse_generator::PulseEvent;
+
+    const SR: f64 = 44_100.0;
+    const PERIOD: f64 = 44_100.0; // 60 BPM
+    const PPQN: u32 = 4;
+    const N_BEATS: usize = 5;
+    const BLOCK: u32 = 512;
+    // Run a bit past N_BEATS periods to capture the final boundary pulse
+    // even after onset corrections shift things by a few samples.
+    const TOTAL_SAMPLES: u32 = (PERIOD as u32) * N_BEATS as u32 + 1000;
+
+    fn run(inject_onsets: bool) -> Vec<PulseEvent> {
+        let mut pll = BeatPll::new(SR);
+        pll.period_samples = PERIOD;
+        pll.phase_samples = 0.0;
+        pll.alpha_period = 0.09;
+        pll.alpha_phase = 0.165;
+
+        let mut gen = PulseGenerator::new(PPQN);
+        gen.reset();
+
+        let onset_samples: Vec<u64> = (1..=N_BEATS)
+            .map(|i| (i as u64) * (PERIOD as u64) + 50)
+            .collect();
+        let mut next_onset = 0usize;
+
+        let mut pulses: Vec<PulseEvent> = Vec::new();
+        let mut absolute = 0u64;
+        let mut remaining = TOTAL_SAMPLES;
+        while remaining > 0 {
+            let take = remaining.min(BLOCK);
+            for i in 0..take {
+                let abs = absolute + i as u64;
+                if inject_onsets
+                    && next_onset < onset_samples.len()
+                    && onset_samples[next_onset] == abs
+                {
+                    pll.on_onset(abs as f64);
+                    next_onset += 1;
+                }
+                pll.advance_one();
+                if let Some(ev) = gen.observe_advance(&pll, i) {
+                    pulses.push(ev);
+                }
+            }
+            absolute += take as u64;
+            remaining -= take;
+        }
+        pulses
+    }
+
+    let control = run(false);
+    let perturbed = run(true);
+
+    // Phase corrections must not change pulse count. (They will shift
+    // pulse positions a few samples forward, but the cadence must remain
+    // exactly N_BEATS * PPQN + 1 pulses for the same window length.)
+    assert_eq!(
+        control.len(),
+        perturbed.len(),
+        "onset corrections changed pulse count: control={}, perturbed={}",
+        control.len(),
+        perturbed.len()
+    );
+}

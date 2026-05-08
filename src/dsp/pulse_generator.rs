@@ -101,8 +101,15 @@ impl PulseGenerator {
             return None;
         }
 
-        // Detect phase wrap (PLL just rolled into the next beat).
-        if pll.phase_samples < self.last_phase {
+        // Detect a real beat-boundary wrap and ignore PLL phase corrections.
+        //
+        // `BeatPll::on_onset` legitimately reduces phase to align the next
+        // pulse with detected beats — that's not a wrap. With α_phase ≤ 0.25
+        // and the per-onset error capped at period/2, the maximum legitimate
+        // backward correction is ≈ period/8. Requiring a drop greater than
+        // half a period leaves a comfortable margin while still catching
+        // every natural wrap (which always drops by ~one full period).
+        if pll.phase_samples + pll.period_samples * 0.5 < self.last_phase {
             self.beat_counter = self.beat_counter.saturating_add(1);
         }
         self.last_phase = pll.phase_samples;
