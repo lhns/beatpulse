@@ -227,11 +227,7 @@ impl Default for BeatpulseParams {
             )
             .with_unit(" ms"),
 
-            midi_channel: IntParam::new(
-                "MIDI Channel",
-                1,
-                IntRange::Linear { min: 1, max: 16 },
-            ),
+            midi_channel: IntParam::new("MIDI Channel", 1, IntRange::Linear { min: 1, max: 16 }),
 
             manual_resync: BoolParam::new("Resync", false),
         }

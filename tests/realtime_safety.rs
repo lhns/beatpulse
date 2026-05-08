@@ -50,8 +50,7 @@ fn r1_r2_soak_varying_block_sizes() {
         let n = block_sizes[i % block_sizes.len()];
         // Fill buf with a fading 60 Hz click every 250 samples.
         for (k, s) in buf[..n].iter_mut().enumerate() {
-            let phase =
-                2.0 * std::f32::consts::PI * 60.0 * (k as f32) / SR as f32;
+            let phase = 2.0 * std::f32::consts::PI * 60.0 * (k as f32) / SR as f32;
             *s = if k % 250 < 50 {
                 (phase.sin()) * 0.5
             } else {
@@ -95,16 +94,17 @@ fn r3_param_toggles_no_panic() {
         gate.set_release_ms(100.0 + (i % 500) as f64);
         gen.set_pulse_rate(((i % 6) as u32 + 1) * 2);
         if i % 50 == 0 {
-            tracker.set_method(match i % 7 {
-                0 => OnsetMethod::Hfc,
-                1 => OnsetMethod::Complex,
-                2 => OnsetMethod::SpecDiff,
-                3 => OnsetMethod::Kl,
-                4 => OnsetMethod::Mkl,
-                5 => OnsetMethod::Phase,
-                _ => OnsetMethod::SpecFlux,
-            })
-            .unwrap();
+            tracker
+                .set_method(match i % 7 {
+                    0 => OnsetMethod::Hfc,
+                    1 => OnsetMethod::Complex,
+                    2 => OnsetMethod::SpecDiff,
+                    3 => OnsetMethod::Kl,
+                    4 => OnsetMethod::Mkl,
+                    5 => OnsetMethod::Phase,
+                    _ => OnsetMethod::SpecFlux,
+                })
+                .unwrap();
         }
     }
 }

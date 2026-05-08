@@ -45,8 +45,7 @@ fn run_with_jitter(bpm: f64, jitter_ms: f64, alpha_period: f64, n: usize) -> f64
     }
 
     let mean: f64 = bpms.iter().sum::<f64>() / bpms.len() as f64;
-    let var: f64 =
-        bpms.iter().map(|b| (b - mean).powi(2)).sum::<f64>() / bpms.len() as f64;
+    let var: f64 = bpms.iter().map(|b| (b - mean).powi(2)).sum::<f64>() / bpms.len() as f64;
     var.sqrt()
 }
 
@@ -101,5 +100,8 @@ fn pll_exposes_bpm_std_dev_estimate() {
     let internal_sigma = pll.bpm_std_dev();
     eprintln!("PLL bpm_std_dev = {:.3}", internal_sigma);
     // With high α and noticeable jitter, the EMA should report > 0.
-    assert!(internal_sigma > 0.2, "expected σ > 0.2, got {internal_sigma}");
+    assert!(
+        internal_sigma > 0.2,
+        "expected σ > 0.2, got {internal_sigma}"
+    );
 }

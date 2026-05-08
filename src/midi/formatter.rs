@@ -194,8 +194,7 @@ impl MidiFormatter {
             note: cfg.note_number.min(127),
             velocity: cfg.note_velocity.clamp(1, 127),
         });
-        let off_abs = block_start_sample + ev.sample_offset as u64
-            + cfg.note_length_samples as u64;
+        let off_abs = block_start_sample + ev.sample_offset as u64 + cfg.note_length_samples as u64;
         self.pending = Some(PendingNoteOff {
             abs_sample: off_abs,
             note: cfg.note_number.min(127),
@@ -236,7 +235,12 @@ mod tests {
         f.on_pulse(pulse(42), 0, &cfg(MsgType::Cc), &mut out);
         assert_eq!(out.len(), 1);
         match out[0] {
-            MidiCommand::Cc { sample_offset, value, cc_number, channel } => {
+            MidiCommand::Cc {
+                sample_offset,
+                value,
+                cc_number,
+                channel,
+            } => {
                 assert_eq!(sample_offset, 42);
                 assert_eq!(value, 127);
                 assert_eq!(cc_number, 16);
@@ -287,14 +291,29 @@ mod tests {
         f.on_pulse(pulse(100), 0, &c, &mut out);
         // Should have emitted a single NoteOn and queued the note-off.
         assert_eq!(out.len(), 1);
-        assert!(matches!(out[0], MidiCommand::NoteOn { sample_offset: 100, note: 60, velocity: 100, channel: 0 }));
+        assert!(matches!(
+            out[0],
+            MidiCommand::NoteOn {
+                sample_offset: 100,
+                note: 60,
+                velocity: 100,
+                channel: 0
+            }
+        ));
         // Now flush a block that contains the note-off.
         let mut out2 = Vec::new();
         // note_off scheduled at abs sample 100 + 441 = 541.
         // Flush block starting at 100, length 600 covers it.
         f.flush_due_note_offs(100, 600, &mut out2);
         assert_eq!(out2.len(), 1);
-        assert!(matches!(out2[0], MidiCommand::NoteOff { note: 60, channel: 0, .. }));
+        assert!(matches!(
+            out2[0],
+            MidiCommand::NoteOff {
+                note: 60,
+                channel: 0,
+                ..
+            }
+        ));
     }
 
     /// M5: note-off across block boundary fires in the correct future block.
@@ -335,8 +354,20 @@ mod tests {
         f.on_pulse(pulse(100), 0, &c, &mut out);
         // Expected: NoteOff at offset 100, then NoteOn at offset 100.
         assert!(out.len() >= 2);
-        assert!(matches!(out[0], MidiCommand::NoteOff { sample_offset: 100, .. }));
-        assert!(matches!(out[1], MidiCommand::NoteOn { sample_offset: 100, .. }));
+        assert!(matches!(
+            out[0],
+            MidiCommand::NoteOff {
+                sample_offset: 100,
+                ..
+            }
+        ));
+        assert!(matches!(
+            out[1],
+            MidiCommand::NoteOn {
+                sample_offset: 100,
+                ..
+            }
+        ));
     }
 
     /// M7: channel offset (1-indexed in params, 0-indexed in output).
@@ -364,8 +395,20 @@ mod tests {
         let mut out = Vec::new();
         f.on_pulse(pulse(50), 0, &c, &mut out);
         assert_eq!(out.len(), 2);
-        assert!(matches!(out[0], MidiCommand::Cc { sample_offset: 50, .. }));
-        assert!(matches!(out[1], MidiCommand::NoteOn { sample_offset: 50, .. }));
+        assert!(matches!(
+            out[0],
+            MidiCommand::Cc {
+                sample_offset: 50,
+                ..
+            }
+        ));
+        assert!(matches!(
+            out[1],
+            MidiCommand::NoteOn {
+                sample_offset: 50,
+                ..
+            }
+        ));
     }
 
     /// M9: parameter values reflected in emitted MIDI.
@@ -378,13 +421,14 @@ mod tests {
         c.note_velocity = 64;
         let mut out = Vec::new();
         f.on_pulse(pulse(0), 0, &c, &mut out);
-        assert!(matches!(
-            out[0],
-            MidiCommand::Cc { cc_number: 7, .. }
-        ));
+        assert!(matches!(out[0], MidiCommand::Cc { cc_number: 7, .. }));
         assert!(matches!(
             out[1],
-            MidiCommand::NoteOn { note: 36, velocity: 64, .. }
+            MidiCommand::NoteOn {
+                note: 36,
+                velocity: 64,
+                ..
+            }
         ));
     }
 

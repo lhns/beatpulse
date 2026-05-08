@@ -18,10 +18,8 @@ use nih_plug_egui::egui::{self, Color32, Response, Stroke, Ui};
 /// font's Unicode coverage (egui's default font doesn't include U+25CF).
 /// `glow` adds a soft outer halo when bright (0.0..=1.0).
 pub fn led(ui: &mut Ui, radius: f32, color: Color32, glow: f32) -> Response {
-    let (rect, response) = ui.allocate_exact_size(
-        egui::Vec2::splat(radius * 2.0 + 6.0),
-        egui::Sense::hover(),
-    );
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::splat(radius * 2.0 + 6.0), egui::Sense::hover());
     let painter = ui.painter();
     let center = rect.center();
     if glow > 0.05 {
@@ -38,11 +36,7 @@ pub fn led(ui: &mut Ui, radius: f32, color: Color32, glow: f32) -> Response {
 
 /// Dropdown for an `EnumParam<E>` showing the variant name in both the
 /// closed and open states. Writes through the setter on selection.
-pub fn enum_combo<E>(
-    ui: &mut Ui,
-    param: &EnumParam<E>,
-    setter: &ParamSetter,
-) -> Response
+pub fn enum_combo<E>(ui: &mut Ui, param: &EnumParam<E>, setter: &ParamSetter) -> Response
 where
     E: Enum + PartialEq + Copy + 'static,
 {
@@ -128,11 +122,7 @@ pub fn int_drag(ui: &mut Ui, param: &IntParam, setter: &ParamSetter) -> Response
             IntRange::Reversed(_) => (0, 127),
         },
     };
-    let response = ui.add(
-        egui::DragValue::new(&mut value)
-            .speed(1.0)
-            .range(min..=max),
-    );
+    let response = ui.add(egui::DragValue::new(&mut value).speed(1.0).range(min..=max));
     if response.changed() {
         setter.begin_set_parameter(param);
         setter.set_parameter(param, value);

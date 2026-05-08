@@ -29,13 +29,12 @@ const BLOCK: usize = 512;
 fn make_click_track(bpm: f64, n_samples: usize) -> Vec<f32> {
     let mut buf = vec![0.0f32; n_samples];
     let click_len = (0.050 * SR as f32) as usize;
-    let decay_tau = (0.020 * SR as f32) as f32;
+    let decay_tau = 0.020 * SR as f32;
     let beat_period = (SR * 60.0 / bpm) as usize;
     let mut t = (0.5 * SR) as usize;
     while t + click_len < n_samples {
         for i in 0..click_len {
-            let phase =
-                2.0 * std::f32::consts::PI * 60.0 * (i as f32) / SR as f32;
+            let phase = 2.0 * std::f32::consts::PI * 60.0 * (i as f32) / SR as f32;
             let env = (-(i as f32) / decay_tau).exp();
             buf[t + i] += 0.8 * env * phase.sin();
         }
@@ -68,7 +67,7 @@ fn run_with_listener(bpm: f64, duration_secs: f64) -> f64 {
         });
         pll.advance(chunk.len() as u64);
         if pll.locked {
-            publisher.publish_tempo(pll.current_bpm());
+            publisher.publish_tempo(pll.current_bpm(), 0);
         }
         absolute += chunk.len() as u64;
 

@@ -71,7 +71,7 @@ fn p2_block_size_extremes() {
     // Build the same kick-drum signal used in `tests/beat_tracker.rs`.
     let mut signal = vec![0.0f32; total];
     let click_len = (0.050 * SR as f32) as usize;
-    let decay_tau = (0.020 * SR as f32) as f32;
+    let decay_tau = 0.020 * SR as f32;
     for &t in &click_at {
         for i in 0..click_len {
             let pos = t + i;
@@ -99,10 +99,7 @@ fn p2_block_size_extremes() {
         }
         // We expect at least 4 onsets out of 6 clicks, with PLL converged
         // to ~120 BPM (within 5 %).
-        assert!(
-            onsets >= 4,
-            "block={block}: only {onsets} onsets detected"
-        );
+        assert!(onsets >= 4, "block={block}: only {onsets} onsets detected");
         let bpm = pll.current_bpm();
         assert!(
             (bpm - 120.0).abs() / 120.0 < 0.05,

@@ -205,9 +205,6 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        assert_eq!(
-            s.load_pulse_count(),
-            (n_threads * bumps_per_thread) as u64
-        );
+        assert_eq!(s.load_pulse_count(), (n_threads * bumps_per_thread) as u64);
     }
 }

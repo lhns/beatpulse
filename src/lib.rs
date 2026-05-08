@@ -133,17 +133,14 @@ impl Plugin for Beatpulse {
         let max_block = buffer_config.max_buffer_size as usize;
 
         let onset_method = self.params.onset_method.value();
-        let beat_tracker = match BeatTracker::new(
-            sr as u32,
-            onset_method,
-            self.params.aubio_threshold(),
-        ) {
-            Ok(t) => t,
-            Err(e) => {
-                nih_log!("BeatTracker init failed: {e}");
-                return false;
-            }
-        };
+        let beat_tracker =
+            match BeatTracker::new(sr as u32, onset_method, self.params.aubio_threshold()) {
+                Ok(t) => t,
+                Err(e) => {
+                    nih_log!("BeatTracker init failed: {e}");
+                    return false;
+                }
+            };
 
         let silence_gate = SilenceGate::new(
             sr as f64,
@@ -304,9 +301,8 @@ impl Plugin for Beatpulse {
                     // typical offsets (±50 ms ≈ ±2200 samples) this
                     // covers the calibration use case; larger offsets
                     // get clamped to block edges. See ADR-0023.
-                    let shifted =
-                        (ev.sample_offset as i32 + latency_offset_samples)
-                            .clamp(0, n_samples as i32 - 1) as u32;
+                    let shifted = (ev.sample_offset as i32 + latency_offset_samples)
+                        .clamp(0, n_samples as i32 - 1) as u32;
                     ev.sample_offset = shifted;
                     if params.midi_enabled.value() {
                         dsp.midi_formatter
@@ -332,8 +328,7 @@ impl Plugin for Beatpulse {
 
         // 8. Publish tempo to Link if locked + active + enabled.
         let link_param = params.link_enabled.value();
-        let latency_offset_micros =
-            (params.latency_offset_ms.value() * 1000.0) as i64;
+        let latency_offset_micros = (params.latency_offset_ms.value() * 1000.0) as i64;
         if active && dsp.pll.locked && link_param {
             dsp.link
                 .publish_tempo(dsp.pll.current_bpm(), latency_offset_micros);
@@ -382,8 +377,8 @@ fn formatter_config(params: &BeatpulseParams, sample_rate: f32) -> FormatterConf
         cc_value: params.cc_value.value() as u8,
         note_number: params.note_number.value() as u8,
         note_velocity: params.note_velocity.value() as u8,
-        note_length_samples: ((params.note_length_ms.value() / 1000.0) * sample_rate)
-            .max(1.0) as u32,
+        note_length_samples: ((params.note_length_ms.value() / 1000.0) * sample_rate).max(1.0)
+            as u32,
         midi_channel: params.midi_channel.value() as u8,
     }
 }
@@ -400,10 +395,8 @@ fn update_dsp_from_params(dsp: &mut DspState, params: &BeatpulseParams) {
     dsp.beat_tracker.set_threshold(params.aubio_threshold());
 
     let onset_method = params.onset_method.value();
-    if onset_method != dsp.last_method {
-        if dsp.beat_tracker.set_method(onset_method).is_ok() {
-            dsp.last_method = onset_method;
-        }
+    if onset_method != dsp.last_method && dsp.beat_tracker.set_method(onset_method).is_ok() {
+        dsp.last_method = onset_method;
     }
 }
 
@@ -463,8 +456,11 @@ impl ClapPlugin for Beatpulse {
 
 impl Vst3Plugin for Beatpulse {
     const VST3_CLASS_ID: [u8; 16] = *b"BeatPulseLhnsv01";
-    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
-        &[Vst3SubCategory::Fx, Vst3SubCategory::Analyzer, Vst3SubCategory::Tools];
+    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[
+        Vst3SubCategory::Fx,
+        Vst3SubCategory::Analyzer,
+        Vst3SubCategory::Tools,
+    ];
 }
 
 nih_export_clap!(Beatpulse);

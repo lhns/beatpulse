@@ -57,10 +57,7 @@ fn load_wav_mono(path: &Path) -> Option<Vec<f32>> {
     let n_channels = spec.channels as usize;
 
     let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader
-            .samples::<f32>()
-            .filter_map(|s| s.ok())
-            .collect(),
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
         hound::SampleFormat::Int => {
             let bits = spec.bits_per_sample as i32;
             let scale = 1.0 / (1i64 << (bits - 1)) as f32;
@@ -192,10 +189,8 @@ fn ballroom_eval() {
     // Aggregate
     let n = per_track.len();
     let f_mean: f64 = per_track.values().map(|(f, _, _)| *f).sum::<f64>() / n as f64;
-    let t1_rate =
-        per_track.values().filter(|(_, t1, _)| *t1).count() as f64 / n as f64;
-    let t2_rate =
-        per_track.values().filter(|(_, _, t2)| *t2).count() as f64 / n as f64;
+    let t1_rate = per_track.values().filter(|(_, t1, _)| *t1).count() as f64 / n as f64;
+    let t2_rate = per_track.values().filter(|(_, _, t2)| *t2).count() as f64 / n as f64;
     let agg = Aggregate {
         n_tracks: n,
         f_measure_mean: f_mean,

@@ -77,7 +77,11 @@ pub fn tempo_from_beats(beats: &[f64]) -> f64 {
     let mut intervals: Vec<f64> = beats.windows(2).map(|w| w[1] - w[0]).collect();
     intervals.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let median = intervals[intervals.len() / 2];
-    if median > 0.0 { 60.0 / median } else { 0.0 }
+    if median > 0.0 {
+        60.0 / median
+    } else {
+        0.0
+    }
 }
 
 /// Tempo accuracy 1: estimated tempo within `tol` (relative) of reference.
@@ -133,17 +137,11 @@ pub fn continuity(reference: &[f64], estimate: &[f64]) -> (f64, f64) {
     (cmlt, best)
 }
 
-fn continuity_at_level(
-    reference: &[f64],
-    estimate: &[f64],
-    factor: f64,
-    offset_frac: f64,
-) -> f64 {
+fn continuity_at_level(reference: &[f64], estimate: &[f64], factor: f64, offset_frac: f64) -> f64 {
     if reference.len() < 2 || estimate.len() < 2 {
         return 0.0;
     }
-    let mean_ibi = (reference[reference.len() - 1] - reference[0])
-        / (reference.len() - 1) as f64;
+    let mean_ibi = (reference[reference.len() - 1] - reference[0]) / (reference.len() - 1) as f64;
     let phase_offset = mean_ibi * offset_frac;
     let tol_frac = 0.175;
 

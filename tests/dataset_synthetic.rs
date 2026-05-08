@@ -20,13 +20,12 @@ const SR: f64 = 44_100.0;
 fn make_clicks(total_samples: usize, click_samples: &[usize]) -> Vec<f32> {
     let mut buf = vec![0.0f32; total_samples];
     let click_len = (0.050 * SR as f32) as usize;
-    let decay_tau = (0.020 * SR as f32) as f32;
+    let decay_tau = 0.020 * SR as f32;
     for &t in click_samples {
         for i in 0..click_len {
             let pos = t + i;
             if pos < total_samples {
-                let phase =
-                    2.0 * std::f32::consts::PI * 60.0 * (i as f32) / SR as f32;
+                let phase = 2.0 * std::f32::consts::PI * 60.0 * (i as f32) / SR as f32;
                 let env = (-(i as f32) / decay_tau).exp();
                 buf[pos] += 0.8 * env * phase.sin();
             }
@@ -119,9 +118,7 @@ fn pulse_rate_matches_ppqn_post_lock() {
         });
         let mut next_onset = 0usize;
         for i in 0..chunk.len() as u32 {
-            while next_onset < onsets_in_block.len()
-                && onsets_in_block[next_onset].0 == i
-            {
+            while next_onset < onsets_in_block.len() && onsets_in_block[next_onset].0 == i {
                 pll.on_onset(onsets_in_block[next_onset].1 as f64);
                 if pll.locked && lock_sample.is_none() {
                     lock_sample = Some(onsets_in_block[next_onset].1);

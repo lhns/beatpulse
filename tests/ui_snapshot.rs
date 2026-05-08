@@ -68,7 +68,9 @@ fn snapshot_midi_expanded() {
     let stub = StubGuiContext;
     let setter = ParamSetter::new(&stub);
 
-    let opts = PanelOptions { force_midi_open: true };
+    let opts = PanelOptions {
+        force_midi_open: true,
+    };
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(WINDOW_W as f32, WINDOW_H as f32 + 200.0))
         .wgpu()

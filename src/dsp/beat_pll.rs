@@ -98,8 +98,7 @@ impl BeatPll {
     /// hot loop when no onsets land in between).
     pub fn advance(&mut self, n: u64) {
         if self.period_samples > 0.0 {
-            self.phase_samples =
-                (self.phase_samples + n as f64).rem_euclid(self.period_samples);
+            self.phase_samples = (self.phase_samples + n as f64).rem_euclid(self.period_samples);
         }
     }
 
@@ -137,8 +136,7 @@ impl BeatPll {
 
                 // Clamp to bounds — the smoother could otherwise drift slightly
                 // out of range from accumulated rounding.
-                self.period_samples =
-                    self.period_samples.clamp(self.min_period, self.max_period);
+                self.period_samples = self.period_samples.clamp(self.min_period, self.max_period);
 
                 // Phase lock: an onset should land at phase = 0.
                 let mut err = self.phase_samples;

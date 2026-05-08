@@ -190,7 +190,11 @@ fn build_panel_body(
                 widgets::led(ui, 6.0, color, glow);
                 ui.label(
                     RichText::new(if locked { "LOCKED" } else { "—" })
-                        .color(if locked { SECTION_HEADER } else { Color32::DARK_GRAY })
+                        .color(if locked {
+                            SECTION_HEADER
+                        } else {
+                            Color32::DARK_GRAY
+                        })
                         .size(11.0),
                 );
             });
@@ -198,9 +202,8 @@ fn build_panel_body(
             ui.horizontal(|ui| {
                 let beat_count = shared.load_beat_count();
                 let id = egui::Id::new("beatpulse_beat_flash");
-                let mut state: (u64, Option<Instant>) = egui_ctx
-                    .data(|d| d.get_temp(id))
-                    .unwrap_or((0, None));
+                let mut state: (u64, Option<Instant>) =
+                    egui_ctx.data(|d| d.get_temp(id)).unwrap_or((0, None));
                 if beat_count != state.0 {
                     state.0 = beat_count;
                     state.1 = Some(Instant::now());
@@ -216,11 +219,7 @@ fn build_panel_body(
                 };
                 let beat_color = Color32::from_rgb(lerp(60, 80), lerp(60, 200), lerp(60, 230));
                 widgets::led(ui, 6.0, beat_color, brightness);
-                ui.label(
-                    RichText::new("BEAT")
-                        .color(SECTION_HEADER)
-                        .size(11.0),
-                );
+                ui.label(RichText::new("BEAT").color(SECTION_HEADER).size(11.0));
             });
         });
         ui.add_space(8.0);
@@ -322,7 +321,9 @@ fn build_panel_body(
 
     ui.add_space(4.0);
     egui::CollapsingHeader::new(
-        RichText::new("MIDI configuration").color(SECTION_HEADER).strong(),
+        RichText::new("MIDI configuration")
+            .color(SECTION_HEADER)
+            .strong(),
     )
     .default_open(options.force_midi_open)
     .show(ui, |ui| {
@@ -351,7 +352,11 @@ fn build_panel_body(
         ui.add_enabled_ui(cc_enabled, |ui| {
             ui.label(
                 RichText::new("CC")
-                    .color(if cc_enabled { SECTION_HEADER } else { Color32::DARK_GRAY })
+                    .color(if cc_enabled {
+                        SECTION_HEADER
+                    } else {
+                        Color32::DARK_GRAY
+                    })
                     .strong(),
             );
             egui::Grid::new("cc-grid")
@@ -376,7 +381,11 @@ fn build_panel_body(
         ui.add_enabled_ui(note_enabled, |ui| {
             ui.label(
                 RichText::new("Note")
-                    .color(if note_enabled { SECTION_HEADER } else { Color32::DARK_GRAY })
+                    .color(if note_enabled {
+                        SECTION_HEADER
+                    } else {
+                        Color32::DARK_GRAY
+                    })
                     .strong(),
             );
             egui::Grid::new("note-grid")
@@ -417,10 +426,7 @@ fn build_panel_body(
 fn section_header(ui: &mut egui::Ui, text: &str) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(
-            egui::Vec2::new(3.0, 13.0),
-            egui::Sense::hover(),
-        );
+        let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(3.0, 13.0), egui::Sense::hover());
         ui.painter().rect_filled(rect, 1.0, ACCENT);
         ui.label(
             RichText::new(text)

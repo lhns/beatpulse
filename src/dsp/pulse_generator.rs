@@ -71,11 +71,7 @@ impl PulseGenerator {
     /// already-advanced PLL state. Use this when the caller is driving the
     /// PLL phase manually (e.g. interleaving onset arrivals with phase
     /// advances).
-    pub fn observe_advance(
-        &mut self,
-        pll: &BeatPll,
-        sample_offset: u32,
-    ) -> Option<PulseEvent> {
+    pub fn observe_advance(&mut self, pll: &BeatPll, sample_offset: u32) -> Option<PulseEvent> {
         self.check(pll, sample_offset)
     }
 

@@ -13,7 +13,7 @@ const SR: u32 = 44_100;
 fn make_clicks(total_samples: usize, click_samples: &[usize]) -> Vec<f32> {
     let mut buf = vec![0.0f32; total_samples];
     let click_len = (0.050 * SR as f32) as usize; // ~50 ms
-    let decay_tau = (0.020 * SR as f32) as f32; // 20 ms decay
+    let decay_tau = 0.020 * SR as f32; // 20 ms decay
     for &t in click_samples {
         for i in 0..click_len {
             let pos = t + i;

@@ -46,7 +46,11 @@ pub struct BeatTracker {
 unsafe impl Send for BeatTracker {}
 
 impl BeatTracker {
-    pub fn new(sample_rate: u32, method: OnsetMethod, threshold: f32) -> Result<Self, &'static str> {
+    pub fn new(
+        sample_rate: u32,
+        method: OnsetMethod,
+        threshold: f32,
+    ) -> Result<Self, &'static str> {
         let onset = Onset::new(method_to_aubio(method), BUF_SIZE, HOP_SIZE, sample_rate)
             .map_err(|_| "aubio Onset::new failed")?;
         let mut tracker = Self {
@@ -73,8 +77,13 @@ impl BeatTracker {
         }
         // aubio doesn't support changing the detection function in-place;
         // recreate the Onset object.
-        let new_onset = Onset::new(method_to_aubio(method), BUF_SIZE, HOP_SIZE, self.sample_rate)
-            .map_err(|_| "aubio Onset::new failed")?;
+        let new_onset = Onset::new(
+            method_to_aubio(method),
+            BUF_SIZE,
+            HOP_SIZE,
+            self.sample_rate,
+        )
+        .map_err(|_| "aubio Onset::new failed")?;
         self.onset = new_onset;
         self.method = method;
         self.onset.set_threshold(self.threshold);
@@ -113,8 +122,7 @@ impl BeatTracker {
         while i < block.len() {
             let space = HOP_SIZE - self.accum_len;
             let take = space.min(block.len() - i);
-            self.accum[self.accum_len..self.accum_len + take]
-                .copy_from_slice(&block[i..i + take]);
+            self.accum[self.accum_len..self.accum_len + take].copy_from_slice(&block[i..i + take]);
             self.accum_len += take;
             i += take;
 
@@ -139,8 +147,7 @@ impl BeatTracker {
                 let onset_within_hop = onset_aubio.saturating_sub(hop_start_aubio_frame);
                 // Onset position within this host block:
                 //   block_offset = hop_end_block_offset - HOP_SIZE + onset_within_hop
-                let onset_block_offset = (hop_end_block_offset as i64
-                    - HOP_SIZE as i64
+                let onset_block_offset = (hop_end_block_offset as i64 - HOP_SIZE as i64
                     + onset_within_hop as i64)
                     .max(0) as u32;
                 let frac = (result - result.floor()).clamp(0.0, 1.0);
@@ -159,7 +166,7 @@ impl BeatTracker {
         &mut self,
         channels: &[&[f32]],
         scratch: &mut [f32],
-        mut on_onset: F,
+        on_onset: F,
     ) {
         if channels.is_empty() {
             return;
@@ -173,7 +180,7 @@ impl BeatTracker {
             }
             scratch[i] = sum / nch;
         }
-        self.process_block(&scratch[..n], |off, frac| on_onset(off, frac));
+        self.process_block(&scratch[..n], on_onset);
     }
 }
 

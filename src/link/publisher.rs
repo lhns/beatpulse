@@ -62,7 +62,8 @@ impl LinkPublisher {
         if (current_bpm - self.last_published_bpm).abs() < COMMIT_THRESHOLD_BPM {
             return;
         }
-        self.link.capture_audio_session_state(&mut self.session_state);
+        self.link
+            .capture_audio_session_state(&mut self.session_state);
         let micros = self.link.clock_micros() + latency_offset_micros;
         self.session_state.set_tempo(current_bpm, micros);
         self.link.commit_audio_session_state(&self.session_state);
