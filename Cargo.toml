@@ -15,10 +15,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # nih-plug is pinned to a git revision; bump intentionally.
-# TODO: replace `branch = "master"` with a `rev = "..."` SHA once the first
-# build is reproduced locally (see docs/adr/0008).
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
-nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+# Pinned to master @ 2026-05-08. See docs/adr/0008-rust-nih-plug-over-cpp-juce.md.
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "28b149ec4d62757d0b448809148a0c3ca6e09a95", features = ["assert_process_allocs"] }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "28b149ec4d62757d0b448809148a0c3ca6e09a95" }
 aubio-rs = "0.2"
 rusty_link = "0.4"
 atomic_float = "1"

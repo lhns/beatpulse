@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libclang-dev libxcb1-dev libxcb-icccm4-dev libxcb-dri2-0-dev libxcb-render0-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libgl1-mesa-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libclang-dev libxcb1-dev libxcb-icccm4-dev libxcb-dri2-0-dev libxcb-render0-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libgl1-mesa-dev pkg-config
+
+      - name: Install Windows build dependencies
+        if: runner.os == 'Windows'
+        run: |
+          choco install -y llvm cmake
+        shell: pwsh
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test --all
+
+  bundle-and-validate:
+    name: bundle + validate (${{ matrix.os }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libclang-dev libxcb1-dev libxcb-icccm4-dev libxcb-dri2-0-dev libxcb-render0-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libgl1-mesa-dev pkg-config
+
+      - name: Install Windows build dependencies
+        if: runner.os == 'Windows'
+        run: choco install -y llvm cmake
+        shell: pwsh
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Bundle
+        run: cargo xtask bundle beatpulse --release
+
+      - name: Install pluginval (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip -o pluginval.zip
+          unzip pluginval.zip
+          chmod +x pluginval
+
+      - name: Install pluginval (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip" -OutFile pluginval.zip
+          Expand-Archive -Path pluginval.zip -DestinationPath .
+        shell: pwsh
+
+      - name: Run pluginval (VST3)
+        run: |
+          ./pluginval --strictness-level 5 --validate-in-process --validate target/bundled/BeatPulse.vst3 || ./pluginval.exe --strictness-level 5 --validate-in-process --validate target/bundled/BeatPulse.vst3
+        shell: bash
+        continue-on-error: true # gate softens until A4 verified end-to-end
+
+      - name: Install clap-validator
+        run: cargo install clap-validator --locked
+        continue-on-error: true
+
+      - name: Run clap-validator
+        run: clap-validator validate target/bundled/BeatPulse.clap
+        continue-on-error: true
