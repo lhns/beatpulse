@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use nih_plug::prelude::{Editor, ParamSetter};
 use nih_plug_egui::egui::{self, Color32, RichText};
+use nih_plug_egui::resizable_window::ResizableWindow;
 use nih_plug_egui::{create_egui_editor, widgets as nih_widgets, EguiState};
 
 use crate::params::{BeatpulseParams, MsgType};
@@ -26,6 +27,10 @@ const BEAT_FLASH_MS: f32 = 120.0;
 
 pub const WINDOW_W: u32 = 480;
 pub const WINDOW_H: u32 = 540;
+/// Minimum drag-to-resize dimensions (ResizableWindow's lower bound).
+/// Below these, the level meter and section headers become hard to read.
+pub const MIN_W: u32 = 420;
+pub const MIN_H: u32 = 360;
 
 // Theme colours.
 const ACCENT: Color32 = Color32::from_rgb(80, 200, 230); // cyan
@@ -44,17 +49,23 @@ pub fn editor(
     params: Arc<BeatpulseParams>,
     shared: Arc<SharedState>,
 ) -> Option<Box<dyn Editor>> {
+    let editor_state_for_resize = egui_state.clone();
     create_egui_editor(
         egui_state,
         (),
         |ctx, _| apply_visuals(ctx),
         move |egui_ctx, setter, _state| {
             apply_visuals(egui_ctx);
-            egui::CentralPanel::default().show(egui_ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    build_panel(ui, &params, &shared, setter);
+            // ResizableWindow paints a drag-handle at the bottom-right
+            // corner and writes the new size into EguiState (which is
+            // persisted via #[persist]). See ADR-0020.
+            ResizableWindow::new("beatpulse-window")
+                .min_size(egui::Vec2::new(MIN_W as f32, MIN_H as f32))
+                .show(egui_ctx, &editor_state_for_resize, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        build_panel(ui, &params, &shared, setter);
+                    });
                 });
-            });
 
             // Repaint at ~30 Hz so the BPM display, lock LED, peer count
             // and meter follow the audio thread.

@@ -26,3 +26,5 @@ a new ADR; existing ADRs are not edited except to mark them Superseded.
 | 0017 | [PulseGenerator wrap detection requires a drop greater than half a period](0017-pulse-generator-wrap-threshold.md) | Accepted          |
 | 0018 | [UI indicator LED reflects beats, not PPQN pulses](0018-beat-led-not-pulse-led.md) | Accepted          |
 | 0019 | [egui_kittest for UI snapshot testing](0019-egui-kittest-for-ui-snapshots.md) | Accepted          |
+| 0020 | [Editor window is host-resizable](0020-resizable-editor.md) | Accepted          |
+| 0021 | [Resize gives space, doesn't scale UI](0021-resize-not-scale.md) | Accepted          |

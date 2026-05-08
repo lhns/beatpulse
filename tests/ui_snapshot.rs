@@ -86,6 +86,38 @@ fn snapshot_midi_expanded() {
 }
 
 #[test]
+fn snapshot_resized_panel() {
+    // Verify that growing the window gives content more room (level
+    // meter and sliders widen) without scaling fonts. Per ADR-0020 /
+    // ADR-0021.
+    let params = BeatpulseParams::default();
+    let shared = SharedState::default();
+    shared.store_bpm(133.0);
+    shared.store_locked(true);
+    shared.store_peak_db(-9.5);
+    shared.store_link_peers(3);
+    shared.store_link_status(LinkStatus::Publishing);
+
+    let stub = StubGuiContext;
+    let setter = ParamSetter::new(&stub);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(720.0, 800.0))
+        .wgpu()
+        .build(|ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    build_panel(ui, &params, &shared, &setter);
+                });
+            });
+        });
+
+    harness.run();
+    let image = harness.render().expect("render failed");
+    save_png(&image, "ui-resized");
+}
+
+#[test]
 fn snapshot_default_panel() {
     let params = BeatpulseParams::default();
     let shared = SharedState::default();
