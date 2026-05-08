@@ -139,42 +139,60 @@ fn continuity_at_level(
     factor: f64,
     offset_frac: f64,
 ) -> f64 {
-    if reference.len() < 2 {
+    if reference.len() < 2 || estimate.len() < 2 {
         return 0.0;
     }
     let mean_ibi = (reference[reference.len() - 1] - reference[0])
         / (reference.len() - 1) as f64;
     let phase_offset = mean_ibi * offset_frac;
-    let tol = 0.175; // 17.5 % of inter-beat interval
+    let tol_frac = 0.175;
 
-    // Build the "expected" reference beats at the given factor/offset.
+    // Synthesise the expected reference beat sequence at the given
+    // tempo factor and phase offset.
     let n_expected = ((reference.len() as f64) * factor).round() as usize;
     if n_expected < 2 {
         return 0.0;
     }
-    let mut expected = Vec::with_capacity(n_expected);
     let new_ibi = mean_ibi / factor;
-    for i in 0..n_expected {
-        expected.push(reference[0] + phase_offset + i as f64 * new_ibi);
-    }
+    let expected: Vec<f64> = (0..n_expected)
+        .map(|i| reference[0] + phase_offset + i as f64 * new_ibi)
+        .collect();
 
-    // For each expected beat, find the closest estimate.
-    let mut tracked = 0usize;
-    let mut prev_tracked = false;
+    // Index of the closest estimate to each expected beat.
+    let nearest_idx: Vec<usize> = expected
+        .iter()
+        .map(|&exp| {
+            let mut best = 0usize;
+            let mut best_d = f64::INFINITY;
+            for (j, &e) in estimate.iter().enumerate() {
+                let d = (e - exp).abs();
+                if d < best_d {
+                    best_d = d;
+                    best = j;
+                }
+            }
+            best
+        })
+        .collect();
+
+    // Continuity: each expected beat is "tracked" iff
+    //   (a) the closest estimate is within tol_frac * new_ibi, AND
+    //   (b) the inter-estimate interval at that index is within tol_frac
+    //       of new_ibi (i.e. estimate is at the right tempo locally).
+    // The metric is the longest contiguous run of tracked beats.
     let mut max_run = 0usize;
     let mut run = 0usize;
-    for &exp in &expected {
-        let mut closest_dist = f64::INFINITY;
-        for &e in estimate {
-            let d = (e - exp).abs();
-            if d < closest_dist {
-                closest_dist = d;
-            }
-        }
-        let ibi_local = mean_ibi / factor;
-        let ok = closest_dist <= tol * ibi_local && (prev_tracked || tracked == 0);
-        if ok {
-            tracked += 1;
+    for (i, &exp) in expected.iter().enumerate() {
+        let j = nearest_idx[i];
+        let phase_ok = (estimate[j] - exp).abs() <= tol_frac * new_ibi;
+        let tempo_ok = if j > 0 {
+            ((estimate[j] - estimate[j - 1]) - new_ibi).abs() <= tol_frac * new_ibi
+        } else if j + 1 < estimate.len() {
+            ((estimate[j + 1] - estimate[j]) - new_ibi).abs() <= tol_frac * new_ibi
+        } else {
+            false
+        };
+        if phase_ok && tempo_ok {
             run += 1;
             if run > max_run {
                 max_run = run;
@@ -182,7 +200,6 @@ fn continuity_at_level(
         } else {
             run = 0;
         }
-        prev_tracked = ok;
     }
     max_run as f64 / expected.len() as f64
 }

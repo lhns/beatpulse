@@ -20,6 +20,14 @@ pub struct PulseEvent {
 
 pub struct PulseGenerator {
     pulse_rate: u32,
+    /// Beat counter — increments each time the PLL phase wraps. Combined
+    /// with the within-beat pulse index this gives a monotonically-growing
+    /// absolute pulse index, so wrap-around at the end of a beat is
+    /// detected as a boundary crossing.
+    beat_counter: i64,
+    /// Last seen PLL phase, in samples. Used to detect wraps.
+    last_phase: f64,
+    /// Most recent absolute pulse index emitted. `i64::MIN` after reset.
     last_pulse_index: i64,
 }
 
@@ -27,6 +35,8 @@ impl PulseGenerator {
     pub fn new(pulse_rate: u32) -> Self {
         Self {
             pulse_rate: pulse_rate.max(1),
+            beat_counter: 0,
+            last_phase: 0.0,
             last_pulse_index: i64::MIN,
         }
     }
@@ -41,12 +51,13 @@ impl PulseGenerator {
 
     /// Reset on PLL re-lock or end of silence.
     pub fn reset(&mut self) {
+        self.beat_counter = 0;
+        self.last_phase = 0.0;
         self.last_pulse_index = i64::MIN;
     }
 
     /// Advance the PLL phase by one sample and emit any pulse events that
-    /// land on this sample. The caller drives this in their per-sample loop;
-    /// alternatively use [`Self::process_block`] for a faster bulk path.
+    /// land on this sample.
     pub fn tick(&mut self, pll: &mut BeatPll, sample_offset: u32) -> Option<PulseEvent> {
         pll.advance_one();
         self.check(pll, sample_offset)
@@ -77,11 +88,19 @@ impl PulseGenerator {
         if pulse_interval <= 0.0 {
             return None;
         }
-        let pulse_phase = pll.phase_samples / pulse_interval;
-        let current_pulse_index = pulse_phase.floor() as i64;
 
-        if current_pulse_index != self.last_pulse_index {
-            self.last_pulse_index = current_pulse_index;
+        // Detect phase wrap (PLL just rolled into the next beat).
+        if pll.phase_samples < self.last_phase {
+            self.beat_counter = self.beat_counter.saturating_add(1);
+        }
+        self.last_phase = pll.phase_samples;
+
+        let within_beat_index = (pll.phase_samples / pulse_interval).floor() as i64;
+        let absolute_index =
+            self.beat_counter.saturating_mul(self.pulse_rate as i64) + within_beat_index;
+
+        if absolute_index != self.last_pulse_index {
+            self.last_pulse_index = absolute_index;
             // Per spec §5.3 / §5.4: after a reset (`last_pulse_index = i64::MIN`),
             // the first pulse fires on the first non-silent sample.
             Some(PulseEvent { sample_offset })

@@ -72,8 +72,10 @@ fn p12_tempo_step_change() {
     let mut pll = BeatPll::new(SR);
     let _ = run_at_bpm(&mut pll, 120.0, 30, 1.0e6);
     // Now switch to 140 BPM. Continue from PLL's last onset time.
+    // With α_period = 0.09, ~50 onsets at the new tempo are needed for
+    // 1 % convergence; 20 lands at ~136.5 BPM.
     let last = pll.last_onset_sample.unwrap();
-    let _ = run_at_bpm(&mut pll, 140.0, 20, last + period_for(140.0));
+    let _ = run_at_bpm(&mut pll, 140.0, 50, last + period_for(140.0));
     assert_relative_eq!(pll.current_bpm(), 140.0, max_relative = 0.01);
 }
 

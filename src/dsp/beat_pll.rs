@@ -92,17 +92,32 @@ impl BeatPll {
         if let Some(last) = self.last_onset_sample {
             let mut observed_period = obs_sample - last;
 
-            // Octave correction
-            if observed_period > 0.0 && observed_period < self.min_period {
+            // Octave correction. Use a small tolerance band so that
+            // observed periods exactly at min/max (e.g. 220 BPM hitting
+            // min_period to within 1 ULP) don't bounce into a wrong
+            // octave from floating-point noise.
+            const OCTAVE_TOL: f64 = 0.01;
+            if observed_period > 0.0 && observed_period < self.min_period * (1.0 - OCTAVE_TOL) {
                 observed_period *= 2.0;
-            } else if observed_period > self.max_period {
+            } else if observed_period > self.max_period * (1.0 + OCTAVE_TOL) {
                 observed_period *= 0.5;
             }
 
-            if observed_period >= self.min_period && observed_period <= self.max_period {
-                // Period smoothing
-                self.period_samples = (1.0 - self.alpha_period) * self.period_samples
-                    + self.alpha_period * observed_period;
+            // Bounds check uses the same tolerance band — observed periods
+            // exactly at min/max from a perfect-tempo input must be accepted
+            // even when 1 ULP of float noise puts them just outside.
+            const ACCEPT_TOL: f64 = 0.01;
+            let lo = self.min_period * (1.0 - ACCEPT_TOL);
+            let hi = self.max_period * (1.0 + ACCEPT_TOL);
+            if observed_period >= lo && observed_period <= hi {
+                // Cold start: snap to the first observed period rather than
+                // smoothing from the cold-init default. After that, smooth.
+                if self.onsets_since_reset <= 1 {
+                    self.period_samples = observed_period;
+                } else {
+                    self.period_samples = (1.0 - self.alpha_period) * self.period_samples
+                        + self.alpha_period * observed_period;
+                }
 
                 // Clamp to bounds — the smoother could otherwise drift slightly
                 // out of range from accumulated rounding.
