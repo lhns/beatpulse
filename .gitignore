@@ -1,0 +1,16 @@
+/target
+*.vst3
+*.clap
+*.dll
+*.so
+*.dylib
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Dataset evaluation output
+/tests/data/output/

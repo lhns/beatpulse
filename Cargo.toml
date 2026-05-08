@@ -1,0 +1,47 @@
+[workspace]
+members = [".", "xtask"]
+
+[package]
+name = "beatpulse"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "GPL-3.0-or-later"
+description = "Real-time beat detector VST3/CLAP with Ableton Link tempo broadcast"
+repository = "https://github.com/lhns/beatpulse"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# nih-plug is pinned to a git revision; bump intentionally.
+# TODO: replace `branch = "master"` with a `rev = "..."` SHA once the first
+# build is reproduced locally (see docs/adr/0008).
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+aubio-rs = "0.2"
+rusty_link = "0.4"
+atomic_float = "1"
+parking_lot = "0.12"
+
+[dev-dependencies]
+approx = "0.5"
+hound = "3"           # WAV decode for dataset harness
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = []
+# Run the Ballroom-dataset evaluation. Requires BEATPULSE_BALLROOM_DIR env var
+# pointing at a local copy of the dataset (audio + .beats annotations).
+dataset-tests = []
+# Run the in-process Ableton Link listener integration test.
+link-integration = []
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1   # nih-plug DSP is unusable without some optimization
