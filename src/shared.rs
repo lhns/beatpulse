@@ -11,7 +11,7 @@
 //! See `BeatPulse-SPEC.md` §9.
 
 use atomic_float::AtomicF64;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 pub struct SharedState {
     pub current_bpm: AtomicF64,
@@ -19,6 +19,10 @@ pub struct SharedState {
     pub input_peak_db: AtomicF64,
     pub link_peers: AtomicUsize,
     pub silence_active: AtomicBool,
+    /// Monotonic count of pulses emitted by `PulseGenerator`. The UI
+    /// detects changes against its previously-seen value and renders a
+    /// brief flash on each delta.
+    pub pulse_count: AtomicU64,
 }
 
 impl Default for SharedState {
@@ -29,6 +33,7 @@ impl Default for SharedState {
             input_peak_db: AtomicF64::new(-90.0),
             link_peers: AtomicUsize::new(0),
             silence_active: AtomicBool::new(false),
+            pulse_count: AtomicU64::new(0),
         }
     }
 }
@@ -75,6 +80,15 @@ impl SharedState {
     pub fn load_silence_active(&self) -> bool {
         self.silence_active.load(Ordering::Relaxed)
     }
+
+    /// Bumped on every pulse emitted by `PulseGenerator`. Audio thread only.
+    pub fn bump_pulse(&self) {
+        self.pulse_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn load_pulse_count(&self) -> u64 {
+        self.pulse_count.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]
@@ -95,5 +109,32 @@ mod tests {
         assert_eq!(s.load_peak_db(), -12.5);
         assert_eq!(s.load_link_peers(), 3);
         assert!(!s.load_silence_active());
+    }
+
+    #[test]
+    fn pulse_count_concurrent_bumps_are_coherent() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let s = Arc::new(SharedState::default());
+        let n_threads = 8;
+        let bumps_per_thread = 1_000;
+
+        let mut handles = Vec::new();
+        for _ in 0..n_threads {
+            let s = s.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..bumps_per_thread {
+                    s.bump_pulse();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            s.load_pulse_count(),
+            (n_threads * bumps_per_thread) as u64
+        );
     }
 }
