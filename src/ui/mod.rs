@@ -17,14 +17,14 @@ use nih_plug_egui::egui::{self, RichText};
 use nih_plug_egui::{create_egui_editor, widgets, EguiState};
 
 use crate::params::{BeatpulseParams, MsgType};
-use crate::shared::SharedState;
+use crate::shared::{LinkStatus, SharedState};
 
 /// How long the beat-flash LED stays lit after each detected beat, in ms.
 /// 120 ms reads as a clean blink at typical tempos (60–220 BPM).
 const BEAT_FLASH_MS: f32 = 120.0;
 
 pub const WINDOW_W: u32 = 480;
-pub const WINDOW_H: u32 = 360;
+pub const WINDOW_H: u32 = 540;
 
 pub fn default_state() -> Arc<EguiState> {
     EguiState::from_size(WINDOW_W, WINDOW_H)
@@ -41,6 +41,7 @@ pub fn editor(
         |_, _| {},
         move |egui_ctx, setter, _state| {
             egui::CentralPanel::default().show(egui_ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("BeatPulse");
                 ui.add_space(4.0);
 
@@ -99,6 +100,24 @@ pub fn editor(
                     ui.label(format!("BPM {:.1}", shared.load_bpm()));
                     ui.separator();
                     ui.label(format!("Link peers {}", shared.load_link_peers()));
+                    let (link_text, link_color) = match shared.load_link_status() {
+                        LinkStatus::Off => (
+                            "OFF",
+                            egui::Color32::from_rgb(110, 110, 110),
+                        ),
+                        LinkStatus::Joined => (
+                            "JOINED",
+                            egui::Color32::from_rgb(220, 180, 60),
+                        ),
+                        LinkStatus::Publishing => (
+                            "PUBLISHING",
+                            egui::Color32::from_rgb(80, 220, 100),
+                        ),
+                    };
+                    ui.label(
+                        RichText::new(format!("● {link_text}"))
+                            .color(link_color),
+                    );
                 });
 
                 ui.add_space(8.0);
@@ -169,6 +188,7 @@ pub fn editor(
                 ui.add_space(4.0);
                 ui.label("Resync");
                 ui.add(widgets::ParamSlider::for_param(&params.manual_resync, setter));
+                });
             });
 
             // Repaint at ~30 Hz so the BPM display, lock LED, peer count

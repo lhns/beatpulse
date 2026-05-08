@@ -32,7 +32,7 @@ use crate::dsp::silence_gate::{SilenceGate, Transition};
 use crate::link::publisher::LinkPublisher;
 use crate::midi::formatter::{FormatterConfig, MidiCommand, MidiFormatter};
 use crate::params::{BeatpulseParams, OnsetMethod};
-use crate::shared::SharedState;
+use crate::shared::{LinkStatus, SharedState};
 
 /// All allocated DSP resources. Constructed in `initialize`, taken down in
 /// `deactivate`.
@@ -320,13 +320,22 @@ impl Plugin for Beatpulse {
         }
 
         // 8. Publish tempo to Link if locked + active + enabled.
-        if active && dsp.pll.locked && params.link_enabled.value() {
+        let link_param = params.link_enabled.value();
+        if active && dsp.pll.locked && link_param {
             dsp.link.publish_tempo(dsp.pll.current_bpm());
-        } else if !params.link_enabled.value() && dsp.link.is_enabled() {
+        } else if !link_param && dsp.link.is_enabled() {
             dsp.link.set_enabled(false);
-        } else if params.link_enabled.value() && !dsp.link.is_enabled() {
+        } else if link_param && !dsp.link.is_enabled() {
             dsp.link.set_enabled(true);
         }
+        let link_status = if !link_param {
+            LinkStatus::Off
+        } else if active && dsp.pll.locked {
+            LinkStatus::Publishing
+        } else {
+            LinkStatus::Joined
+        };
+        shared.store_link_status(link_status);
 
         // 9. Update shared state for the UI.
         let peak_db = if peak > 1e-6 {

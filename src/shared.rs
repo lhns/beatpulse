@@ -11,7 +11,33 @@
 //! See `BeatPulse-SPEC.md` §9.
 
 use atomic_float::AtomicF64;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+
+/// Derived status of the Link publisher, exposed to the UI so the user can
+/// distinguish "Link is off" from "Link is on but waiting for a lock" from
+/// "Link is actively pushing tempo to peers."
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkStatus {
+    /// `link_enabled` parameter is false; the publisher has called
+    /// `link.enable(false)` and is invisible to peers.
+    Off = 0,
+    /// Link is enabled and BeatPulse is a peer in the session, but is not
+    /// currently pushing tempo (silent input or PLL not locked).
+    Joined = 1,
+    /// Link is enabled, audio is non-silent, PLL is locked — the publisher
+    /// is committing tempo updates to the session.
+    Publishing = 2,
+}
+
+impl LinkStatus {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            2 => LinkStatus::Publishing,
+            1 => LinkStatus::Joined,
+            _ => LinkStatus::Off,
+        }
+    }
+}
 
 pub struct SharedState {
     pub current_bpm: AtomicF64,
@@ -27,6 +53,8 @@ pub struct SharedState {
     /// `is_beat_boundary == true`). Drives the BEAT LED, which flashes
     /// at the beat rate regardless of PPQN.
     pub beat_count: AtomicU64,
+    /// Encoded `LinkStatus` (see enum). Audio thread writes; UI reads.
+    pub link_status: AtomicU8,
 }
 
 impl Default for SharedState {
@@ -39,6 +67,7 @@ impl Default for SharedState {
             silence_active: AtomicBool::new(false),
             pulse_count: AtomicU64::new(0),
             beat_count: AtomicU64::new(0),
+            link_status: AtomicU8::new(LinkStatus::Off as u8),
         }
     }
 }
@@ -104,6 +133,14 @@ impl SharedState {
     pub fn load_beat_count(&self) -> u64 {
         self.beat_count.load(Ordering::Relaxed)
     }
+
+    pub fn store_link_status(&self, s: LinkStatus) {
+        self.link_status.store(s as u8, Ordering::Relaxed);
+    }
+
+    pub fn load_link_status(&self) -> LinkStatus {
+        LinkStatus::from_u8(self.link_status.load(Ordering::Relaxed))
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +161,15 @@ mod tests {
         assert_eq!(s.load_peak_db(), -12.5);
         assert_eq!(s.load_link_peers(), 3);
         assert!(!s.load_silence_active());
+    }
+
+    #[test]
+    fn link_status_round_trip() {
+        let s = SharedState::default();
+        for status in [LinkStatus::Off, LinkStatus::Joined, LinkStatus::Publishing] {
+            s.store_link_status(status);
+            assert_eq!(s.load_link_status(), status);
+        }
     }
 
     #[test]
