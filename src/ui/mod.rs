@@ -169,6 +169,14 @@ fn build_panel_body(
                 .size(12.0)
                 .strong(),
         );
+        let sigma = shared.load_bpm_std_dev();
+        if sigma > 0.5 {
+            ui.label(
+                RichText::new(format!("±{sigma:.1}"))
+                    .color(Color32::from_rgb(200, 150, 80))
+                    .size(13.0),
+            );
+        }
         ui.add_space(12.0);
         ui.vertical(|ui| {
             // LOCKED LED
@@ -263,6 +271,13 @@ fn build_panel_body(
             );
             ui.end_row();
 
+            ui.label("Stability");
+            ui.add(
+                nih_widgets::ParamSlider::for_param(&params.tempo_stability, setter)
+                    .with_width(slider_w),
+            );
+            ui.end_row();
+
             ui.label("Onset method");
             widgets::enum_combo(ui, &params.onset_method, setter);
             ui.end_row();
@@ -277,6 +292,21 @@ fn build_panel_body(
             ui.label("Silence release");
             ui.add(
                 nih_widgets::ParamSlider::for_param(&params.silence_release, setter)
+                    .with_width(slider_w),
+            );
+            ui.end_row();
+        });
+
+    ui.add_space(6.0);
+    section_header(ui, "Timing");
+    egui::Grid::new("timing-grid")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .min_col_width(110.0)
+        .show(ui, |ui| {
+            ui.label("Latency offset");
+            ui.add(
+                nih_widgets::ParamSlider::for_param(&params.latency_offset_ms, setter)
                     .with_width(slider_w),
             );
             ui.end_row();

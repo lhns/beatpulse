@@ -50,7 +50,9 @@ impl LinkPublisher {
     /// Publish the current tempo. No-op if the BPM hasn't changed
     /// significantly since the last call. Realtime-safe: uses
     /// `capture_audio_session_state` / `commit_audio_session_state`.
-    pub fn publish_tempo(&mut self, current_bpm: f64) {
+    /// `latency_offset_micros` shifts the timestamp at which the tempo
+    /// is set on the Link timeline (see ADR-0023).
+    pub fn publish_tempo(&mut self, current_bpm: f64, latency_offset_micros: i64) {
         if !self.link.is_enabled() {
             return;
         }
@@ -61,7 +63,7 @@ impl LinkPublisher {
             return;
         }
         self.link.capture_audio_session_state(&mut self.session_state);
-        let micros = self.link.clock_micros();
+        let micros = self.link.clock_micros() + latency_offset_micros;
         self.session_state.set_tempo(current_bpm, micros);
         self.link.commit_audio_session_state(&self.session_state);
         self.last_published_bpm = current_bpm;
@@ -90,27 +92,24 @@ mod tests {
     #[test]
     fn publish_skips_subthreshold_changes() {
         let mut p = LinkPublisher::new(120.0);
-        p.publish_tempo(120.0); // no change
-        p.publish_tempo(120.04); // below threshold
-        // Should still be 120.0 — Link's session state may have drifted from
-        // peers, so we only assert that our local last_published_bpm hasn't
-        // moved.
+        p.publish_tempo(120.0, 0);
+        p.publish_tempo(120.04, 0);
         assert_eq!(p.last_published_bpm, 120.0);
     }
 
     #[test]
     fn publish_accepts_supra_threshold_change() {
         let mut p = LinkPublisher::new(120.0);
-        p.publish_tempo(124.5);
+        p.publish_tempo(124.5, 0);
         assert_eq!(p.last_published_bpm, 124.5);
     }
 
     #[test]
     fn ignores_invalid_bpm() {
         let mut p = LinkPublisher::new(120.0);
-        p.publish_tempo(f64::NAN);
-        p.publish_tempo(0.0);
-        p.publish_tempo(-30.0);
+        p.publish_tempo(f64::NAN, 0);
+        p.publish_tempo(0.0, 0);
+        p.publish_tempo(-30.0, 0);
         assert_eq!(p.last_published_bpm, 120.0);
     }
 

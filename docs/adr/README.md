@@ -29,3 +29,5 @@ a new ADR; existing ADRs are not edited except to mark them Superseded.
 | 0020 | [Editor window is host-resizable](0020-resizable-editor.md) | Accepted          |
 | 0021 | [Resize gives space, doesn't scale UI](0021-resize-not-scale.md) | Accepted          |
 | 0022 | [Host-driven editor resize is unsupported pending nih-plug fix](0022-host-driven-resize-unsupported.md) | Accepted          |
+| 0023 | [Latency offset is user-tunable, not auto-detected](0023-latency-offset-user-tunable.md) | Accepted          |
+| 0024 | [Tempo stability is its own parameter, decoupled from Sensitivity](0024-tempo-stability-separate-param.md) | Accepted          |

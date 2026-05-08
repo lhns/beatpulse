@@ -281,6 +281,8 @@ impl Plugin for Beatpulse {
 
         if active {
             let cfg = formatter_config(&params, dsp.sample_rate);
+            let latency_offset_samples =
+                (params.latency_offset_ms.value() / 1000.0 * dsp.sample_rate) as i32;
             let mut next_onset = 0usize;
             for i in 0..n_samples as u32 {
                 // Apply any onsets landing at this sample, BEFORE advancing.
@@ -290,13 +292,22 @@ impl Plugin for Beatpulse {
                 }
                 // Advance PLL one sample and check for a pulse.
                 dsp.pll.advance_one();
-                if let Some(ev) = dsp.pulse_gen.observe_advance(&dsp.pll, i) {
+                if let Some(mut ev) = dsp.pulse_gen.observe_advance(&dsp.pll, i) {
                     // Drive the UI flash indicators. Independent of output
                     // gating — the LEDs reflect detection.
                     shared.bump_pulse();
                     if ev.is_beat_boundary {
                         shared.bump_beat();
                     }
+                    // Apply user latency offset: shift the pulse's
+                    // sample_offset, clamped to within this block. For
+                    // typical offsets (±50 ms ≈ ±2200 samples) this
+                    // covers the calibration use case; larger offsets
+                    // get clamped to block edges. See ADR-0023.
+                    let shifted =
+                        (ev.sample_offset as i32 + latency_offset_samples)
+                            .clamp(0, n_samples as i32 - 1) as u32;
+                    ev.sample_offset = shifted;
                     if params.midi_enabled.value() {
                         dsp.midi_formatter
                             .on_pulse(ev, block_start, &cfg, &mut dsp.midi_out);
@@ -321,8 +332,11 @@ impl Plugin for Beatpulse {
 
         // 8. Publish tempo to Link if locked + active + enabled.
         let link_param = params.link_enabled.value();
+        let latency_offset_micros =
+            (params.latency_offset_ms.value() * 1000.0) as i64;
         if active && dsp.pll.locked && link_param {
-            dsp.link.publish_tempo(dsp.pll.current_bpm());
+            dsp.link
+                .publish_tempo(dsp.pll.current_bpm(), latency_offset_micros);
         } else if !link_param && dsp.link.is_enabled() {
             dsp.link.set_enabled(false);
         } else if link_param && !dsp.link.is_enabled() {
@@ -344,6 +358,7 @@ impl Plugin for Beatpulse {
             -120.0
         };
         shared.store_bpm(dsp.pll.current_bpm());
+        shared.store_bpm_std_dev(dsp.pll.bpm_std_dev());
         shared.store_locked(dsp.pll.locked);
         shared.store_peak_db(peak_db);
         shared.store_link_peers(dsp.link.num_peers() as usize);

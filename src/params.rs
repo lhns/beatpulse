@@ -83,6 +83,18 @@ pub struct BeatpulseParams {
     #[id = "sens"]
     pub sensitivity: FloatParam,
 
+    /// Decoupled period-smoothing control. 0 = jittery & fast (high α),
+    /// 1 = smooth & slow (low α). Default 0.5 ≈ historical α_period.
+    #[id = "stab"]
+    pub tempo_stability: FloatParam,
+
+    /// Output timing offset in milliseconds. Positive = pulses fire later
+    /// than the predicted beat sample. Negative = earlier. Used to
+    /// compensate for end-to-end audio→listener latency so DMX cues
+    /// align with the perceived beat.
+    #[id = "latMs"]
+    pub latency_offset_ms: FloatParam,
+
     #[id = "onset"]
     pub onset_method: EnumParam<OnsetMethod>,
 
@@ -141,6 +153,24 @@ impl Default for BeatpulseParams {
                 FloatRange::Linear { min: 0.0, max: 1.0 },
             )
             .with_value_to_string(formatters::v2s_f32_rounded(2)),
+
+            tempo_stability: FloatParam::new(
+                "Tempo stability",
+                0.5,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            )
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
+
+            latency_offset_ms: FloatParam::new(
+                "Latency offset",
+                0.0,
+                FloatRange::Linear {
+                    min: -200.0,
+                    max: 200.0,
+                },
+            )
+            .with_unit(" ms")
+            .with_step_size(1.0),
 
             onset_method: EnumParam::new("Onset Method", OnsetMethod::SpecFlux),
 
@@ -216,8 +246,11 @@ impl BeatpulseParams {
     }
 
     pub fn alpha_period(&self) -> f64 {
-        let s = self.sensitivity.value() as f64;
-        lerp64(0.03, 0.15, s)
+        // Decoupled from sensitivity (per ADR-0024). 0 = jittery (high α),
+        // 1 = smooth (low α). The midpoint α=0.11 is close to the
+        // historical default of 0.09 so existing presets behave similarly.
+        let s = self.tempo_stability.value() as f64;
+        lerp64(0.20, 0.02, s)
     }
 
     pub fn alpha_phase(&self) -> f64 {
@@ -245,6 +278,8 @@ mod tests {
     fn defaults_match_spec() {
         let p = BeatpulseParams::default();
         assert_eq!(p.sensitivity.value(), 0.5);
+        assert_eq!(p.tempo_stability.value(), 0.5);
+        assert_eq!(p.latency_offset_ms.value(), 0.0);
         assert_eq!(p.onset_method.value(), OnsetMethod::SpecFlux);
         assert_eq!(p.silence_threshold.value(), -50.0);
         assert_eq!(p.silence_release.value(), 200.0);
@@ -269,8 +304,9 @@ mod tests {
 
         // sensitivity = 0.5 (default)
         assert_relative_eq!(p.aubio_threshold(), 0.55, epsilon = 1e-4);
-        assert_relative_eq!(p.alpha_period(), 0.09, epsilon = 1e-4);
         assert_relative_eq!(p.alpha_phase(), 0.165, epsilon = 1e-4);
+        // tempo_stability = 0.5 → α_period = midpoint of 0.20..0.02
+        assert_relative_eq!(p.alpha_period(), 0.11, epsilon = 1e-4);
     }
 
     #[test]

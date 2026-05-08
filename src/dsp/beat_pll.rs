@@ -27,6 +27,12 @@ pub struct BeatPll {
 
     pub min_period: f64,
     pub max_period: f64,
+
+    /// Exponential moving mean of `current_bpm()` sampled at each onset.
+    pub bpm_ema: f64,
+    /// Exponential moving variance of `current_bpm()` sampled at each
+    /// onset. `bpm_std_dev()` is its square root.
+    pub bpm_var_ema: f64,
 }
 
 impl BeatPll {
@@ -42,6 +48,8 @@ impl BeatPll {
             alpha_phase: 0.165,
             min_period: 0.0,
             max_period: 0.0,
+            bpm_ema: 0.0,
+            bpm_var_ema: 0.0,
         };
         pll.set_sample_rate(sample_rate);
         pll
@@ -68,6 +76,14 @@ impl BeatPll {
         self.locked = false;
         self.onsets_since_reset = 0;
         self.last_onset_sample = None;
+        self.bpm_ema = 0.0;
+        self.bpm_var_ema = 0.0;
+    }
+
+    /// Square root of the EMA of squared BPM residuals, sampled at each
+    /// onset. Drives the UI's `±σ` annotation.
+    pub fn bpm_std_dev(&self) -> f64 {
+        self.bpm_var_ema.max(0.0).sqrt()
     }
 
     /// Advance phase by one sample.
@@ -141,6 +157,23 @@ impl BeatPll {
         self.last_onset_sample = Some(obs_sample);
         self.onsets_since_reset = self.onsets_since_reset.saturating_add(1);
         self.locked = self.onsets_since_reset >= LOCK_THRESHOLD;
+
+        // Update BPM variance tracker (EMA over the last ~10 onsets).
+        // Skip the first two onsets because the cold-start snap makes
+        // their BPM samples meaningless.
+        if self.onsets_since_reset > 2 {
+            const ALPHA: f64 = 0.10;
+            let bpm = self.current_bpm();
+            if self.bpm_ema == 0.0 {
+                self.bpm_ema = bpm;
+                self.bpm_var_ema = 0.0;
+            } else {
+                let delta = bpm - self.bpm_ema;
+                self.bpm_ema += ALPHA * delta;
+                let sq = delta * delta;
+                self.bpm_var_ema += ALPHA * (sq - self.bpm_var_ema);
+            }
+        }
     }
 
     pub fn current_bpm(&self) -> f64 {

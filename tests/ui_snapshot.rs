@@ -118,6 +118,38 @@ fn snapshot_resized_panel() {
 }
 
 #[test]
+fn snapshot_unstable_bpm() {
+    // Verify that `±σ` annotation appears next to the BPM when the
+    // PLL is reporting noticeable variance.
+    let params = BeatpulseParams::default();
+    let shared = SharedState::default();
+    shared.store_bpm(133.0);
+    shared.store_bpm_std_dev(1.4);
+    shared.store_locked(true);
+    shared.store_peak_db(-9.5);
+    shared.store_link_peers(2);
+    shared.store_link_status(LinkStatus::Publishing);
+
+    let stub = StubGuiContext;
+    let setter = ParamSetter::new(&stub);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(WINDOW_W as f32, WINDOW_H as f32))
+        .wgpu()
+        .build(|ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    build_panel(ui, &params, &shared, &setter);
+                });
+            });
+        });
+
+    harness.run();
+    let image = harness.render().expect("render failed");
+    save_png(&image, "ui-unstable-bpm");
+}
+
+#[test]
 fn snapshot_default_panel() {
     let params = BeatpulseParams::default();
     let shared = SharedState::default();

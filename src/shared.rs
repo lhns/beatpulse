@@ -55,6 +55,9 @@ pub struct SharedState {
     pub beat_count: AtomicU64,
     /// Encoded `LinkStatus` (see enum). Audio thread writes; UI reads.
     pub link_status: AtomicU8,
+    /// Standard deviation of `current_bpm()` over the last ~10 onsets.
+    /// UI shows `±σ` next to the headline BPM when σ > 0.5.
+    pub bpm_std_dev: AtomicF64,
 }
 
 impl Default for SharedState {
@@ -68,6 +71,7 @@ impl Default for SharedState {
             pulse_count: AtomicU64::new(0),
             beat_count: AtomicU64::new(0),
             link_status: AtomicU8::new(LinkStatus::Off as u8),
+            bpm_std_dev: AtomicF64::new(0.0),
         }
     }
 }
@@ -140,6 +144,14 @@ impl SharedState {
 
     pub fn load_link_status(&self) -> LinkStatus {
         LinkStatus::from_u8(self.link_status.load(Ordering::Relaxed))
+    }
+
+    pub fn store_bpm_std_dev(&self, sigma: f64) {
+        self.bpm_std_dev.store(sigma, Ordering::Relaxed);
+    }
+
+    pub fn load_bpm_std_dev(&self) -> f64 {
+        self.bpm_std_dev.load(Ordering::Relaxed)
     }
 }
 
