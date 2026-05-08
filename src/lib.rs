@@ -291,9 +291,12 @@ impl Plugin for Beatpulse {
                 // Advance PLL one sample and check for a pulse.
                 dsp.pll.advance_one();
                 if let Some(ev) = dsp.pulse_gen.observe_advance(&dsp.pll, i) {
-                    // Drive the UI pulse-flash indicator. Independent of
-                    // output gating — the LED reflects detection.
+                    // Drive the UI flash indicators. Independent of output
+                    // gating — the LEDs reflect detection.
                     shared.bump_pulse();
+                    if ev.is_beat_boundary {
+                        shared.bump_beat();
+                    }
                     if params.midi_enabled.value() {
                         dsp.midi_formatter
                             .on_pulse(ev, block_start, &cfg, &mut dsp.midi_out);

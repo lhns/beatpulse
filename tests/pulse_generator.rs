@@ -213,3 +213,40 @@ fn g12_onset_corrections_no_phantom_pulses() {
         perturbed.len()
     );
 }
+
+/// G13: `PulseEvent::is_beat_boundary` is true exactly once per beat,
+/// regardless of PPQN. This is what drives the BEAT LED in the UI.
+#[test]
+fn g13_beat_boundary_flag() {
+    use beatpulse::dsp::pulse_generator::PulseEvent;
+
+    const PERIOD: f64 = 44_100.0;
+    const N_BEATS: u32 = 5;
+
+    for &ppqn in &[1u32, 2, 4, 8, 16, 24] {
+        let mut pll = pll_at(PERIOD);
+        let mut gen = PulseGenerator::new(ppqn);
+        gen.reset();
+        let mut events: Vec<PulseEvent> = Vec::new();
+        let total = (PERIOD as u32) * N_BEATS;
+        gen.process_block(&mut pll, total, |ev| events.push(ev));
+
+        let beats: usize = events.iter().filter(|e| e.is_beat_boundary).count();
+        let non_beats: usize = events.len() - beats;
+
+        // Expected boundaries: one per beat wrap (N_BEATS) plus the
+        // reset-fire pulse at sample 0 (also `within_beat_index == 0`).
+        let expected_beats = N_BEATS as usize + 1;
+        assert_eq!(
+            beats, expected_beats,
+            "ppqn={ppqn}: got {beats} beat-boundary events, expected {expected_beats}"
+        );
+        // Non-boundary pulses: (PPQN - 1) per beat.
+        assert_eq!(
+            non_beats,
+            (ppqn as usize - 1) * N_BEATS as usize,
+            "ppqn={ppqn}: got {non_beats} non-boundary pulses, expected {}",
+            (ppqn - 1) * N_BEATS
+        );
+    }
+}

@@ -23,6 +23,10 @@ pub struct SharedState {
     /// detects changes against its previously-seen value and renders a
     /// brief flash on each delta.
     pub pulse_count: AtomicU64,
+    /// Monotonic count of detected beats (= pulses with
+    /// `is_beat_boundary == true`). Drives the BEAT LED, which flashes
+    /// at the beat rate regardless of PPQN.
+    pub beat_count: AtomicU64,
 }
 
 impl Default for SharedState {
@@ -34,6 +38,7 @@ impl Default for SharedState {
             link_peers: AtomicUsize::new(0),
             silence_active: AtomicBool::new(false),
             pulse_count: AtomicU64::new(0),
+            beat_count: AtomicU64::new(0),
         }
     }
 }
@@ -88,6 +93,16 @@ impl SharedState {
 
     pub fn load_pulse_count(&self) -> u64 {
         self.pulse_count.load(Ordering::Relaxed)
+    }
+
+    /// Bumped only on pulses where `PulseEvent::is_beat_boundary` is true,
+    /// i.e. once per detected beat. Audio thread only.
+    pub fn bump_beat(&self) {
+        self.beat_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn load_beat_count(&self) -> u64 {
+        self.beat_count.load(Ordering::Relaxed)
     }
 }
 

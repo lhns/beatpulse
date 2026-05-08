@@ -16,6 +16,10 @@ use crate::dsp::beat_pll::BeatPll;
 pub struct PulseEvent {
     /// Sample offset within the current host block.
     pub sample_offset: u32,
+    /// True when this pulse is the first one of a beat (i.e. the
+    /// within-beat index is 0). Drives the UI BEAT LED, which fires
+    /// once per detected beat regardless of PPQN.
+    pub is_beat_boundary: bool,
 }
 
 pub struct PulseGenerator {
@@ -122,7 +126,10 @@ impl PulseGenerator {
             self.last_pulse_index = absolute_index;
             // Per spec §5.3 / §5.4: after a reset (`last_pulse_index = i64::MIN`),
             // the first pulse fires on the first non-silent sample.
-            Some(PulseEvent { sample_offset })
+            Some(PulseEvent {
+                sample_offset,
+                is_beat_boundary: within_beat_index == 0,
+            })
         } else {
             None
         }

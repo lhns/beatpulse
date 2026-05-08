@@ -19,9 +19,9 @@ use nih_plug_egui::{create_egui_editor, widgets, EguiState};
 use crate::params::{BeatpulseParams, MsgType};
 use crate::shared::SharedState;
 
-/// How long the pulse-flash LED stays lit after each pulse, in ms. 120 ms
-/// keeps it visible at slow PPQNs and overlaps cleanly at fast ones.
-const PULSE_FLASH_MS: f32 = 120.0;
+/// How long the beat-flash LED stays lit after each detected beat, in ms.
+/// 120 ms reads as a clean blink at typical tempos (60–220 BPM).
+const BEAT_FLASH_MS: f32 = 120.0;
 
 pub const WINDOW_W: u32 = 480;
 pub const WINDOW_H: u32 = 360;
@@ -62,15 +62,18 @@ pub fn editor(
 
                     ui.separator();
 
-                    // Pulse-flash LED. Persist last-seen count + last-flash
-                    // time across frames via egui's temporary data store.
-                    let pulse_count = shared.load_pulse_count();
-                    let id = egui::Id::new("beatpulse_pulse_flash");
+                    // Beat-flash LED. Fires once per detected beat (i.e.
+                    // pulses where `is_beat_boundary == true`),
+                    // independent of PPQN. Persist last-seen count +
+                    // last-flash time across frames via egui's temp data
+                    // store.
+                    let beat_count = shared.load_beat_count();
+                    let id = egui::Id::new("beatpulse_beat_flash");
                     let mut state: (u64, Option<Instant>) = egui_ctx
                         .data(|d| d.get_temp(id))
                         .unwrap_or((0, None));
-                    if pulse_count != state.0 {
-                        state.0 = pulse_count;
+                    if beat_count != state.0 {
+                        state.0 = beat_count;
                         state.1 = Some(Instant::now());
                     }
                     egui_ctx.data_mut(|d| d.insert_temp(id, state));
@@ -79,18 +82,18 @@ pub fn editor(
                         .1
                         .map(|t| t.elapsed().as_secs_f32() * 1000.0)
                         .unwrap_or(f32::INFINITY);
-                    let brightness = (1.0 - elapsed_ms / PULSE_FLASH_MS).clamp(0.0, 1.0);
+                    let brightness = (1.0 - elapsed_ms / BEAT_FLASH_MS).clamp(0.0, 1.0);
                     let lerp = |dim: u8, bright: u8| {
                         (dim as f32 + (bright as f32 - dim as f32) * brightness) as u8
                     };
-                    let pulse_color =
+                    let beat_color =
                         egui::Color32::from_rgb(lerp(60, 80), lerp(60, 200), lerp(60, 230));
                     ui.label(
                         RichText::new(circle)
-                            .color(pulse_color)
+                            .color(beat_color)
                             .size(20.0),
                     );
-                    ui.label("PULSE");
+                    ui.label("BEAT");
 
                     ui.separator();
                     ui.label(format!("BPM {:.1}", shared.load_bpm()));

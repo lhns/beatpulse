@@ -222,7 +222,10 @@ mod tests {
     }
 
     fn pulse(offset: u32) -> PulseEvent {
-        PulseEvent { sample_offset: offset }
+        PulseEvent {
+            sample_offset: offset,
+            is_beat_boundary: false,
+        }
     }
 
     /// M1: CC Fixed127 emits value 127 with correct sample offset.
