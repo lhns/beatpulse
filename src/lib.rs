@@ -31,7 +31,7 @@ use crate::dsp::pulse_generator::PulseGenerator;
 use crate::dsp::silence_gate::{SilenceGate, Transition};
 use crate::link::publisher::LinkPublisher;
 use crate::midi::formatter::{FormatterConfig, MidiCommand, MidiFormatter};
-use crate::params::{BeatpulseParams, MsgType, OnsetMethod};
+use crate::params::{BeatpulseParams, OnsetMethod};
 use crate::shared::SharedState;
 
 /// All allocated DSP resources. Constructed in `initialize`, taken down in
@@ -290,9 +290,7 @@ impl Plugin for Beatpulse {
                 }
                 // Advance PLL one sample and check for a pulse.
                 dsp.pll.advance_one();
-                if let Some(ev) =
-                    pulse_gen_check(&mut dsp.pulse_gen, &dsp.pll, i)
-                {
+                if let Some(ev) = dsp.pulse_gen.observe_advance(&dsp.pll, i) {
                     if params.midi_enabled.value() {
                         dsp.midi_formatter
                             .on_pulse(ev, block_start, &cfg, &mut dsp.midi_out);
@@ -377,29 +375,6 @@ fn update_dsp_from_params(dsp: &mut DspState, params: &BeatpulseParams) {
             dsp.last_method = onset_method;
         }
     }
-    let _ = MsgType::Cc; // silence unused-import warning if MsgType isn't reached
-}
-
-/// Inline copy of `PulseGenerator::check` that doesn't advance the PLL —
-/// the audio thread loop above already advanced.
-fn pulse_gen_check(
-    gen: &mut PulseGenerator,
-    pll: &BeatPll,
-    sample_offset: u32,
-) -> Option<crate::dsp::pulse_generator::PulseEvent> {
-    // Reuse the public tick path: advance was already called above, so we
-    // re-implement the comparator without re-advancing.
-    use crate::dsp::pulse_generator::PulseEvent;
-    if pll.period_samples <= 0.0 {
-        return None;
-    }
-    let pulse_interval = pll.period_samples / gen.pulse_rate() as f64;
-    if pulse_interval <= 0.0 {
-        return None;
-    }
-    // Detect phase wrap by tracking last_phase via a side-effect: we do
-    // this through a small private helper on PulseGenerator below.
-    gen.observe_advance(pll, sample_offset).map(|ev: PulseEvent| ev)
 }
 
 fn midi_command_to_event(cmd: MidiCommand) -> NoteEvent<()> {

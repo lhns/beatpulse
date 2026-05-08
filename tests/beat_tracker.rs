@@ -104,3 +104,48 @@ fn method_change() {
     t.set_method(OnsetMethod::Hfc).unwrap();
     t.set_method(OnsetMethod::Complex).unwrap();
 }
+
+/// P5: onset *positions* (not just counts) must land within a tight window
+/// of the synthetic click positions. Tolerates aubio's analysis delay
+/// (~hop-size) plus a generous slack for the kick envelope's energy peak
+/// not coinciding with sample 0 of the click.
+#[test]
+fn p5_onset_position_accuracy() {
+    let click_at = [10_000usize, 30_000, 50_000, 70_000, 90_000];
+    let n = 110_000;
+    let signal = make_clicks(n, &click_at);
+
+    let mut tracker = BeatTracker::new(SR, OnsetMethod::SpecFlux, 0.3).unwrap();
+    let mut detected_abs = Vec::new();
+    let block = 512;
+    let mut absolute = 0u64;
+    for chunk in signal.chunks(block) {
+        let abs_at_block = absolute;
+        tracker.process_block(chunk, |offset, _frac| {
+            detected_abs.push(abs_at_block + offset as u64);
+        });
+        absolute += chunk.len() as u64;
+    }
+
+    // For each click, find the closest detected onset and assert it's
+    // within ±50 ms (≈2200 samples at 44.1 kHz).
+    let tol_samples: i64 = (0.050 * SR as f64) as i64;
+    let mut matched = 0usize;
+    for &c in &click_at {
+        let closest = detected_abs
+            .iter()
+            .map(|&d| (d as i64 - c as i64).abs())
+            .min()
+            .unwrap_or(i64::MAX);
+        if closest <= tol_samples {
+            matched += 1;
+        }
+    }
+    // Allow at most one of the five clicks to be missed (aubio sometimes
+    // doesn't report the very first onset due to spectral warm-up).
+    assert!(
+        matched >= click_at.len() - 1,
+        "matched {matched}/{} clicks within ±50 ms; detected = {detected_abs:?}",
+        click_at.len()
+    );
+}
