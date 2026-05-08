@@ -69,9 +69,6 @@ jobs:
       - name: Run link-integration test (Linux only)
         if: runner.os == 'Linux'
         run: cargo test --features link-integration --test link_listener
-        continue-on-error: true   # multicast in CI containers can be
-                                  # flaky; flip to required after first
-                                  # green run
 
   bundle-and-validate:
     name: bundle + validate (${{ matrix.os }})
