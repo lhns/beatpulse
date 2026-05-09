@@ -1,4 +1,5 @@
 /target
+/tools
 *.vst3
 *.clap
 *.dll

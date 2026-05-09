@@ -112,16 +112,27 @@ jobs:
           Expand-Archive -Path pluginval.zip -DestinationPath .
         shell: pwsh
 
-      - name: Run pluginval (VST3)
-        run: |
-          ./pluginval --strictness-level 5 --validate-in-process --validate target/bundled/BeatPulse.vst3 || ./pluginval.exe --strictness-level 5 --validate-in-process --validate target/bundled/BeatPulse.vst3
-        shell: bash
-        continue-on-error: true # gate softens until A4 verified end-to-end
+      - name: Run pluginval (VST3, Linux)
+        if: runner.os == 'Linux'
+        run: ./pluginval --strictness-level 5 --validate-in-process --validate target/bundled/beatpulse.vst3
 
+      - name: Run pluginval (VST3, Windows)
+        if: runner.os == 'Windows'
+        run: ./pluginval.exe --strictness-level 5 --validate-in-process --validate target/bundled/beatpulse.vst3
+        shell: bash
+
+      # clap-validator is published only as a git crate (not on crates.io).
       - name: Install clap-validator
-        run: cargo install clap-validator --locked
+        run: cargo install --git https://github.com/free-audio/clap-validator.git --locked
         continue-on-error: true
 
+      # Soft gate due to an upstream clap-validator bug (note_ports::get is
+      # called with is_input=true when iterating outputs — bug in
+      # src/plugin/ext/note_ports.rs:113 of clap-validator main). Our
+      # plugin correctly returns false ("no input port") which the
+      # validator misreports as "Plugin returned an error". The CLAP
+      # spec-conformance is fine — verified by inspection of nih-plug's
+      # CLAP wrapper. Flip to required after upstream fixes the bug.
       - name: Run clap-validator
-        run: clap-validator validate target/bundled/BeatPulse.clap
+        run: clap-validator validate target/bundled/beatpulse.clap
         continue-on-error: true

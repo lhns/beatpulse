@@ -80,6 +80,10 @@ Bundles land in `target/bundled/`. Install paths:
 | Linux   | `~/.vst3/`                                  | `~/.clap/`                                  |
 | macOS   | `~/Library/Audio/Plug-Ins/VST3/`            | `~/Library/Audio/Plug-Ins/CLAP/`            |
 
+Windows note: the CLAP directory often doesn't exist until the first
+CLAP plugin is installed. Create it (`New-Item -ItemType Directory "C:\Program Files\Common Files\CLAP" -Force`) before copying. Installing
+to `C:\Program Files\Common Files\` requires an elevated PowerShell.
+
 ## Test
 
 ```bash
@@ -137,6 +141,16 @@ ms)` as a baseline, then fine-tune by eye).
   isolated rhythmic sources (kick bus, drum loop). On full-mix audio,
   the PLL may lock to a sub-rhythm rather than the perceived downbeat.
   See [`docs/adr/0003`](docs/adr/0003-aubio-over-madmom-beatnet.md).
+- **`clap-validator` reports false positives.** Three of its tests
+  (`param-fuzz-basic`, `process-note-out-of-place-basic`,
+  `process-note-out-of-place-extra-data-basic`) fail with "Plugin
+  returned an error when querying output note port 0". This is an
+  [upstream bug in clap-validator](https://github.com/free-audio/clap-validator/blob/main/src/plugin/ext/note_ports.rs)
+  — `note_ports::get` is called with `is_input=true` when iterating
+  output ports. Our plugin correctly returns false ("no input port at
+  index 0"); the validator misinterprets that as a plugin error.
+  pluginval (the VST3 equivalent) passes at strictness 5 with zero
+  issues.
 
 ## Architecture
 

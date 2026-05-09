@@ -87,6 +87,80 @@ fn run_with_listener(bpm: f64, duration_secs: f64) -> f64 {
     state.tempo()
 }
 
+/// Multi-instance Link thrash test (per ADR-0012). Two publishers fight
+/// over session tempo (last-write-wins). Listener should observe BOTH
+/// tempos appearing during the contention window. After we silence one
+/// publisher, the listener should settle toward the remaining one's
+/// tempo.
+#[test]
+fn multi_instance_link_thrash_then_settles() {
+    let listener = AblLink::new(120.0);
+    listener.enable(true);
+
+    let mut publisher_a = LinkPublisher::new(120.0);
+    let mut publisher_b = LinkPublisher::new(120.0);
+
+    let mut state = SessionState::new();
+    let mut observed_tempos: Vec<f64> = Vec::new();
+
+    // Phase 1: both publishers committing different tempos for 4 s.
+    // Toggle each publisher's BPM by 1 between commits so the publisher's
+    // 0.05 BPM threshold gate doesn't suppress repeat commits — we need
+    // each publisher to keep hitting the wire so the listener sees both
+    // tempos appear during the contention.
+    let phase1_end = Instant::now() + Duration::from_secs(4);
+    let mut last_a_commit = Instant::now();
+    let mut last_b_commit = Instant::now();
+    let mut a_toggle = false;
+    let mut b_toggle = false;
+    while Instant::now() < phase1_end {
+        if last_a_commit.elapsed() > Duration::from_millis(50) {
+            let bpm = if a_toggle { 120.5 } else { 119.5 };
+            a_toggle = !a_toggle;
+            publisher_a.publish_tempo(bpm, 0);
+            last_a_commit = Instant::now();
+        }
+        if last_b_commit.elapsed() > Duration::from_millis(50) {
+            let bpm = if b_toggle { 140.5 } else { 139.5 };
+            b_toggle = !b_toggle;
+            publisher_b.publish_tempo(bpm, 0);
+            last_b_commit = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(25));
+        listener.capture_app_session_state(&mut state);
+        observed_tempos.push(state.tempo());
+    }
+
+    let saw_120 = observed_tempos.iter().any(|t| (*t - 120.0).abs() < 1.5);
+    let saw_140 = observed_tempos.iter().any(|t| (*t - 140.0).abs() < 1.5);
+    assert!(
+        saw_120 && saw_140,
+        "expected to observe BOTH 120 and 140 BPM during contention; saw 120={saw_120}, 140={saw_140}, samples={observed_tempos:?}"
+    );
+
+    // Phase 2: silence publisher A. Publisher B continues. Listener
+    // should settle toward 140.
+    drop(publisher_a);
+    let phase2_end = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < phase2_end {
+        if last_b_commit.elapsed() > Duration::from_millis(50) {
+            // Force a fresh commit by perturbing the BPM slightly so it
+            // exceeds the threshold-gate, then back.
+            publisher_b.publish_tempo(140.5, 0);
+            publisher_b.publish_tempo(140.0, 0);
+            last_b_commit = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    listener.capture_app_session_state(&mut state);
+    let final_tempo = state.tempo();
+    assert!(
+        (final_tempo - 140.0).abs() < 1.5,
+        "after silencing publisher A, expected listener tempo ~140, got {final_tempo:.2}"
+    );
+}
+
 /// All BPMs in one test because parallel Link instances interfere
 /// (multicast is process-global). Each sub-case constructs and drops its
 /// own publisher to isolate session state, with a settle delay between.

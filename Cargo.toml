@@ -41,6 +41,8 @@ default = []
 dataset-tests = []
 # Run the in-process Ableton Link listener integration test.
 link-integration = []
+# Run the CPU profile harness (cargo test --features cpu-bench --test cpu_profile).
+cpu-bench = []
 
 [profile.release]
 lto = "thin"
