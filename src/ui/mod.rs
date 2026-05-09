@@ -263,6 +263,10 @@ fn build_panel_body(
         .spacing([12.0, 6.0])
         .min_col_width(110.0)
         .show(ui, |ui| {
+            ui.label("Tracking mode");
+            widgets::enum_combo(ui, &params.tracking_mode, setter);
+            ui.end_row();
+
             ui.label("Sensitivity");
             ui.add(
                 nih_widgets::ParamSlider::for_param(&params.sensitivity, setter)
@@ -309,7 +313,33 @@ fn build_panel_body(
                     .with_width(slider_w),
             );
             ui.end_row();
+
+            let lookahead_active = matches!(
+                params.tracking_mode.value(),
+                crate::params::TrackingMode::LookaheadConsensus
+            );
+            ui.label("Lookahead");
+            ui.add_enabled_ui(lookahead_active, |ui| {
+                ui.add(
+                    nih_widgets::ParamSlider::for_param(&params.lookahead_ms, setter)
+                        .with_width(slider_w),
+                );
+            });
+            ui.end_row();
         });
+    if matches!(
+        params.tracking_mode.value(),
+        crate::params::TrackingMode::LookaheadConsensus
+    ) {
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(
+                "Lookahead adds latency. Use Latency offset (~ -lookahead/2) to compensate.",
+            )
+            .small()
+            .weak(),
+        );
+    }
 
     ui.add_space(6.0);
     section_header(ui, "Outputs");

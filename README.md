@@ -36,6 +36,14 @@ See [`BeatPulse-SPEC.md`](BeatPulse-SPEC.md) for the design and
 - **Decoupled controls.** Sensitivity (aubio threshold + phase-lock
   rate) and Stability (period smoothing) are separate knobs — no
   fighting between "detect more onsets" and "less BPM jitter".
+- **Two tracking modes.** *Reactive* (default) feeds every onset to the
+  PLL — low latency, best for clean kick / drum-bus sources.
+  *Lookahead Consensus* buffers onsets over a configurable window
+  (200–3000 ms, default 2000), takes the median IOI, and snaps the PLL
+  once two consecutive consensus windows agree — steadier BPM on noisy
+  full-mix input, at the cost of `lookahead` of latency. Compensate
+  via the existing Latency offset slider (rule of thumb:
+  `≈ -lookahead/2`). See ADR-0026.
 - **Latency calibration.** Per-instance `Latency offset` slider
   (±200 ms) so DMX cues align with the perceived audio after host
   buffer + driver + speaker delay.
@@ -122,6 +130,12 @@ If Daslight reports zero peers:
 If DMX cues fire visibly early relative to the audio: increase
 `Latency offset` (negative direction; start with `-(host buffer size in
 ms)` as a baseline, then fine-tune by eye).
+
+If the BPM display jitters on full-mix input (vocals, hats, melody
+attacks fooling the per-onset PLL): switch *Tracking mode* to
+**Lookahead Consensus** in the Detection section and set *Latency
+offset* to roughly `-lookahead/2` (≈ −1000 ms with the 2000 ms default)
+to compensate for the added analysis delay. See ADR-0026.
 
 ## Known limitations
 

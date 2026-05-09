@@ -27,11 +27,12 @@ pub mod ui;
 
 use crate::dsp::beat_pll::BeatPll;
 use crate::dsp::beat_tracker::BeatTracker;
+use crate::dsp::consensus_tracker::ConsensusTracker;
 use crate::dsp::pulse_generator::PulseGenerator;
 use crate::dsp::silence_gate::{SilenceGate, Transition};
 use crate::link::publisher::LinkPublisher;
 use crate::midi::formatter::{FormatterConfig, MidiCommand, MidiFormatter};
-use crate::params::{BeatpulseParams, OnsetMethod};
+use crate::params::{BeatpulseParams, OnsetMethod, TrackingMode};
 use crate::shared::{LinkStatus, SharedState};
 
 /// All allocated DSP resources. Constructed in `initialize`, taken down in
@@ -41,6 +42,7 @@ struct DspState {
     beat_tracker: BeatTracker,
     silence_gate: SilenceGate,
     pll: BeatPll,
+    consensus: ConsensusTracker,
     pulse_gen: PulseGenerator,
     midi_formatter: MidiFormatter,
     link: LinkPublisher,
@@ -154,6 +156,7 @@ impl Plugin for Beatpulse {
         let pulse_gen = PulseGenerator::new(self.params.pulse_rate.value().as_u32());
         let midi_formatter = MidiFormatter::new();
         let link = LinkPublisher::new(120.0);
+        let consensus = ConsensusTracker::new(sr as f64, self.params.lookahead_ms.value() as f64);
 
         // Generous capacity: one MIDI event per sample at PPQN=24 is wildly
         // beyond reality, but bounded. Reserve up-front so process never
@@ -165,6 +168,7 @@ impl Plugin for Beatpulse {
             beat_tracker,
             silence_gate,
             pll,
+            consensus,
             pulse_gen,
             midi_formatter,
             link,
@@ -204,6 +208,7 @@ impl Plugin for Beatpulse {
         let resync_now = params.manual_resync.value();
         if resync_now && !dsp.last_resync_pressed {
             dsp.pll.reset();
+            dsp.consensus.reset();
             dsp.pulse_gen.reset();
             dsp.midi_formatter.reset();
         }
@@ -239,6 +244,7 @@ impl Plugin for Beatpulse {
             let t = dsp.silence_gate.tick(s);
             if let Transition::SilentToActive = t {
                 dsp.pll.reset();
+                dsp.consensus.reset();
                 dsp.pulse_gen.reset();
                 dsp.midi_formatter.reset();
                 let _ = i;
@@ -280,11 +286,37 @@ impl Plugin for Beatpulse {
             let cfg = formatter_config(&params, dsp.sample_rate);
             let latency_offset_samples =
                 (params.latency_offset_ms.value() / 1000.0 * dsp.sample_rate) as i32;
+            let tracking_mode = params.tracking_mode.value();
+
+            // Lookahead-consensus path: ingest all onsets up-front, prune
+            // stale ones, and snap the PLL when the consensus tracker
+            // commits. The per-sample loop below then only advances phase
+            // and emits pulses (no per-onset PLL feedback). See ADR-0026.
+            if matches!(tracking_mode, TrackingMode::LookaheadConsensus) {
+                for (_, abs_sample) in onsets.iter().take(n_onsets) {
+                    dsp.consensus.on_onset(*abs_sample);
+                }
+                let block_end_abs = block_start.wrapping_add(n_samples as u64);
+                dsp.consensus.prune(block_end_abs);
+                if let Some(consensus_period) = dsp.consensus.dominant_period() {
+                    dsp.pll.period_samples = consensus_period;
+                    if let Some(recent) = dsp.consensus.most_recent_onset() {
+                        dsp.pll.last_onset_sample = Some(recent as f64);
+                        let elapsed = block_start as f64 - recent as f64;
+                        dsp.pll.phase_samples = elapsed.rem_euclid(consensus_period);
+                        dsp.pll.locked = true;
+                    }
+                }
+            }
+
             let mut next_onset = 0usize;
             for i in 0..n_samples as u32 {
                 // Apply any onsets landing at this sample, BEFORE advancing.
+                // Only the Reactive path feeds onsets to the PLL directly.
                 while next_onset < n_onsets && onsets[next_onset].0 == i {
-                    dsp.pll.on_onset(onsets[next_onset].1 as f64);
+                    if matches!(tracking_mode, TrackingMode::Reactive) {
+                        dsp.pll.on_onset(onsets[next_onset].1 as f64);
+                    }
                     next_onset += 1;
                 }
                 // Advance PLL one sample and check for a pulse.
@@ -312,7 +344,9 @@ impl Plugin for Beatpulse {
             }
             // Any onsets at sample==n_samples (rare): apply at end of block.
             while next_onset < n_onsets {
-                dsp.pll.on_onset(onsets[next_onset].1 as f64);
+                if matches!(tracking_mode, TrackingMode::Reactive) {
+                    dsp.pll.on_onset(onsets[next_onset].1 as f64);
+                }
                 next_onset += 1;
             }
         } else {
@@ -393,6 +427,8 @@ fn update_dsp_from_params(dsp: &mut DspState, params: &BeatpulseParams) {
     dsp.pulse_gen
         .set_pulse_rate(params.pulse_rate.value().as_u32());
     dsp.beat_tracker.set_threshold(params.aubio_threshold());
+    dsp.consensus
+        .set_window_ms(params.lookahead_ms.value() as f64);
 
     let onset_method = params.onset_method.value();
     if onset_method != dsp.last_method && dsp.beat_tracker.set_method(onset_method).is_ok() {

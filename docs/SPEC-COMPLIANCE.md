@@ -94,6 +94,17 @@ Last refreshed against `main` after commit `f6b212c`-area work.
 | Tunables driven by `sensitivity` parameter                  | ⚠      | `α_phase` from sensitivity; `α_period` decoupled to `tempo_stability` (ADR-0024). |
 | `current_bpm()`                                             | ✅      |                                                |
 
+### §5.2b ConsensusTracker (opt-in alternative)
+
+| Item                                                                | Status | Notes                                          |
+|---------------------------------------------------------------------|--------|------------------------------------------------|
+| Sliding onset window (200–3000 ms, default 2000)                    | ✅      | `lookahead_ms` param.                          |
+| Median IOI with octave correction + outlier filtering               | ✅      | `dominant_period`.                             |
+| 2-frame stability gate before commit                                | ✅      | Prevents thrashing.                             |
+| Snap PLL period + phase on commit (no double-smoothing)             | ✅      | See ADR-0026.                                   |
+| Reset on silence-end / manual resync                                | ✅      |                                                |
+| Default tracking mode unchanged (`Reactive`)                        | ✅      | Opt-in via `tracking_mode` param.              |
+
 ### §5.3 PulseGenerator
 
 | Item                                                       | Status | Notes                                          |

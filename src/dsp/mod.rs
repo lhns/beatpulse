@@ -5,5 +5,6 @@
 
 pub mod beat_pll;
 pub mod beat_tracker;
+pub mod consensus_tracker;
 pub mod pulse_generator;
 pub mod silence_gate;

@@ -74,6 +74,20 @@ pub enum CcValueMode {
     Toggle127_0,
 }
 
+/// Tracking mode — selects how detected onsets feed the PLL. See ADR-0026.
+#[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
+pub enum TrackingMode {
+    /// Per-onset PLL feedback. Low latency, jittery on dense input.
+    /// Best for clean kick / drum-bus sources.
+    #[name = "Reactive"]
+    Reactive,
+    /// Buffer onsets over a window, derive consensus period from
+    /// median IOI, snap PLL periodically. Higher latency (= the
+    /// configured Lookahead window), more stable on full-mix audio.
+    #[name = "Lookahead Consensus"]
+    LookaheadConsensus,
+}
+
 #[derive(Params)]
 pub struct BeatpulseParams {
     /// Persisted egui editor state (window size, etc.).
@@ -94,6 +108,18 @@ pub struct BeatpulseParams {
     /// align with the perceived beat.
     #[id = "latMs"]
     pub latency_offset_ms: FloatParam,
+
+    /// Selects per-onset PLL feedback (default) or buffered consensus.
+    /// See ADR-0026.
+    #[id = "trkMd"]
+    pub tracking_mode: EnumParam<TrackingMode>,
+
+    /// Sliding window for the consensus tracker. Effective only when
+    /// `tracking_mode == LookaheadConsensus`. Adds approximately this
+    /// much latency to BPM/beat output; compensate via
+    /// `latency_offset_ms`.
+    #[id = "lookMs"]
+    pub lookahead_ms: FloatParam,
 
     #[id = "onset"]
     pub onset_method: EnumParam<OnsetMethod>,
@@ -171,6 +197,19 @@ impl Default for BeatpulseParams {
             )
             .with_unit(" ms")
             .with_step_size(1.0),
+
+            tracking_mode: EnumParam::new("Tracking Mode", TrackingMode::Reactive),
+
+            lookahead_ms: FloatParam::new(
+                "Lookahead",
+                2000.0,
+                FloatRange::Linear {
+                    min: 200.0,
+                    max: 3000.0,
+                },
+            )
+            .with_unit(" ms")
+            .with_step_size(50.0),
 
             onset_method: EnumParam::new("Onset Method", OnsetMethod::SpecFlux),
 
@@ -276,6 +315,8 @@ mod tests {
         assert_eq!(p.sensitivity.value(), 0.5);
         assert_eq!(p.tempo_stability.value(), 0.5);
         assert_eq!(p.latency_offset_ms.value(), 0.0);
+        assert_eq!(p.tracking_mode.value(), TrackingMode::Reactive);
+        assert_eq!(p.lookahead_ms.value(), 2000.0);
         assert_eq!(p.onset_method.value(), OnsetMethod::SpecFlux);
         assert_eq!(p.silence_threshold.value(), -50.0);
         assert_eq!(p.silence_release.value(), 200.0);
