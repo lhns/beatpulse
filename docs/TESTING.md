@@ -208,10 +208,28 @@ the new baseline JSON in the same PR with a note in the commit body.
 
 ### 6.1 pluginval (VST3) — every CI run
 
+Local invocation (developer machine with display):
+
 ```bash
-pluginval --strictness-level 5 \
-          --validate target/bundled/BeatPulse.vst3
+pluginval --strictness-level 5 --validate-in-process \
+          --validate target/bundled/beatpulse.vst3
 ```
+
+CI invocation (headless GitHub Actions runners):
+
+```bash
+pluginval --strictness-level 5 --validate-in-process --skip-gui-tests \
+          --validate target/bundled/beatpulse.vst3
+```
+
+The CI invocation passes `--skip-gui-tests` because GitHub Actions
+runners have no display server / GL context — opening the egui editor
+crashes with SIGSEGV on Linux (GLX returns null) and an `Option::unwrap`
+panic in `baseview/src/gl/win.rs:227` on Windows. The skipped Editor
+test is a "does it draw without crashing" check; we cover that path
+via the `egui_kittest` snapshot tests in default `cargo test`. All
+other pluginval tests — audio processing, parameter state, automation,
+bus config, threading — still run.
 
 Exit code 0 = pass. Strictness 5 covers parameter automation, state
 save/restore, basic threading, and call coverage. Bumped to 8 before

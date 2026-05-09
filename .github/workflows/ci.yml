@@ -112,13 +112,20 @@ jobs:
           Expand-Archive -Path pluginval.zip -DestinationPath .
         shell: pwsh
 
+      # `--skip-gui-tests` because GitHub Actions runners are headless;
+      # opening the egui editor crashes (SIGSEGV on Linux GLX, panic on
+      # Windows WGL). The Editor test is a "does it draw without
+      # crashing" check that we already cover via the egui_kittest
+      # snapshot tests in default `cargo test`. All other pluginval
+      # tests (audio processing, parameter state, automation, bus
+      # config, threading) still run.
       - name: Run pluginval (VST3, Linux)
         if: runner.os == 'Linux'
-        run: ./pluginval --strictness-level 5 --validate-in-process --validate target/bundled/beatpulse.vst3
+        run: ./pluginval --strictness-level 5 --validate-in-process --skip-gui-tests --validate target/bundled/beatpulse.vst3
 
       - name: Run pluginval (VST3, Windows)
         if: runner.os == 'Windows'
-        run: ./pluginval.exe --strictness-level 5 --validate-in-process --validate target/bundled/beatpulse.vst3
+        run: ./pluginval.exe --strictness-level 5 --validate-in-process --skip-gui-tests --validate target/bundled/beatpulse.vst3
         shell: bash
 
       # clap-validator is published only as a git crate (not on crates.io).
