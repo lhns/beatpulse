@@ -3,6 +3,16 @@
 
 //! GiantSteps Tempo Dataset fetcher.
 //!
+//! **Status as of 2026-05-10: both audio mirrors are dead.** JKU's
+//! `backup/` returns a 302 redirect to the homepage; Beatport's
+//! `geo-samples.beatport.com/lofi/` returns 404. No public re-host
+//! exists (Beat This! deliberately omitted GiantSteps from its
+//! spectrogram release because the previews were never relicensed).
+//! The fetcher will detect this — every download produces an identical
+//! MD5 mismatch — but cannot recover. The harness still works if you
+//! supply the audio another way (manual archive, contacting the JKU
+//! authors, etc).
+//!
 //! Audio: `https://www.cp.jku.at/datasets/giantsteps/backup/<id>.LOFI.mp3`
 //! (JKU's stable mirror; the original Beatport CDN is the backup).
 //!

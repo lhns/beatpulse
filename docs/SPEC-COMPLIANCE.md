@@ -117,12 +117,16 @@ Last refreshed against `main` after commit `f6b212c`-area work.
 **Real-audio evaluation** (gated on `--features dataset-tests`, run
 locally after fetching datasets — not part of CI):
 
-- Ballroom (`ballroom_compare`): per-beat F-measure A/B. *TODO populate
-  Δ after first run.*
-- GiantSteps Tempo (`giantsteps_compare`): EDM tempo accuracy A/B
-  (TA1 / TA2). *TODO populate Δ after first run.*
-- SMC_MIREX (`smc_compare`): adversarial F-measure A/B. *TODO populate
-  Δ after first run (mirror flaky; manual fallback documented).*
+- **Ballroom** (`ballroom_compare`, n=698, measured 2026-05-10):
+  reactive F=0.346, consensus F=0.536, **ΔF = +0.190**. Consensus
+  better on **671/698 tracks (96 %)**, reactive better on 20, tied on 7.
+  TA2 0.150 → 0.311 (+16 pp). Confirms the synthetic finding at scale
+  on real (ballroom-dance) audio.
+- GiantSteps Tempo (`giantsteps_compare`): not measurable as of
+  2026-05-10 — both upstream audio mirrors (JKU + Beatport CDN) are
+  dead. Harness ready if audio resurfaces.
+- SMC_MIREX (`smc_compare`): not measured — INESC mirror unreachable
+  (`ECONNREFUSED`); manual fallback documented in TESTING.md.
 
 σ of reported BPM is *not* a useful proxy here: reactive has low σ even
 when locked on the wrong tempo (smooth drift); consensus has high σ

@@ -167,7 +167,7 @@ panics on heap allocation in `process`. Tests:
 |--------------------|---------------------|-------------------------------|-------------------------|
 | Synthetic clicks   | Always-runs in CI   | Hard: F-measure ≥ 0.95        | In-tree, `tests/data/synthetic/` |
 | Ballroom           | Primary acceptance  | Hard: F-measure ≥ 0.70 aggregate, no individual track < 0.50 | External, `BEATPULSE_BALLROOM_DIR` (fetcher: `cargo xtask-fetch-ballroom`) |
-| GiantSteps Tempo   | EDM A/B (consensus) | Soft: report ΔTA1/ΔTA2        | External, `BEATPULSE_GIANTSTEPS_DIR` (fetcher: `cargo xtask-fetch-giantsteps`) |
+| GiantSteps Tempo   | EDM A/B (consensus) | Soft: report ΔTA1/ΔTA2        | External, `BEATPULSE_GIANTSTEPS_DIR` — **both mirrors dead 2026-05; harness unusable until audio resurfaces** |
 | SMC_MIREX          | Hard-cases stress   | Soft: report only             | External, `BEATPULSE_SMC_DIR` (mirror flaky; manual fallback documented) |
 
 ### 5.2 Metrics (Rust impl in `tests/eval/metrics.rs`)

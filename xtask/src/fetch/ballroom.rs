@@ -11,7 +11,9 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use super::common;
 
-const AUDIO_URL: &str = "http://mtg.upf.edu/ismir2004/contest/tempoContest/data1.tar.gz";
+const AUDIO_URL: &str = "https://mtg.upf.edu/ismir2004/contest/tempoContest/data1.tar.gz";
+// 1.35 GB (~698 × 30s 16-bit 44.1 kHz stereo WAVs). The mtg.upf.edu
+// HTTP variant currently 403s — only HTTPS works (verified 2026-05-10).
 const ANNOTATIONS_REPO: &str = "https://github.com/CPJKU/BallroomAnnotations";
 const EXPECTED_WAV_COUNT: usize = 685;
 
@@ -58,12 +60,14 @@ pub fn run(args: &[String]) -> Result<()> {
     let tarball = cache.join("data1.tar.gz");
     let client = common::http_client()?;
 
-    if force || !tarball.exists() || fs::metadata(&tarball)?.len() < 1024 {
-        common::download(&client, audio_url, &tarball)
-            .with_context(|| format!("downloading {audio_url} → {}", tarball.display()))?;
-    } else {
-        eprintln!("[ballroom] cached tarball at {}", tarball.display());
+    if force {
+        let _ = fs::remove_file(&tarball);
     }
+    // download() is resume-aware: if a partial cache exists it sends a
+    // Range request and appends; if it's already complete it returns
+    // immediately.
+    common::download(&client, audio_url, &tarball)
+        .with_context(|| format!("downloading {audio_url} → {}", tarball.display()))?;
 
     if let Some(expected) = &expected_sha256 {
         let got = common::sha256_of(&tarball)?;

@@ -32,45 +32,124 @@ pub fn http_client() -> Result<reqwest::blocking::Client> {
         .build()?)
 }
 
-/// Download `url` → `dest`, with a progress bar. Returns Ok on success;
-/// bubbles up reqwest errors and HTTP 4xx/5xx as Err.
+/// Download `url` → `dest` with a progress bar. Resume-aware: if the
+/// destination already exists with `0 < size < expected_total`, sends
+/// a `Range: bytes=<size>-` request and appends. If the file is
+/// already complete (matches `Content-Length` from HEAD) returns
+/// immediately. Falls back to a full re-download if the server doesn't
+/// honour ranges (returns 200 instead of 206).
+///
+/// Bubbles up reqwest errors and HTTP 4xx/5xx as Err. The expected use
+/// is to call this in a small retry loop (the network is the network).
 pub fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Result<()> {
-    let mut resp = client.get(url).send()?;
-    if !resp.status().is_success() {
-        bail!("GET {url} returned HTTP {}", resp.status());
+    // 1. Probe expected size via HEAD. Some servers return
+    // Content-Length: 0 or omit it on HEAD; treat that as "unknown"
+    // rather than authoritative — *never* delete a cached file based
+    // on an unknown total.
+    let head = client.head(url).send()?;
+    if !head.status().is_success() {
+        bail!("HEAD {url} returned HTTP {}", head.status());
     }
-    let pb = match resp.content_length() {
-        Some(len) => {
-            let pb = ProgressBar::new(len);
-            pb.set_style(
-                ProgressStyle::with_template(
-                    "{bar:40.cyan/blue} {bytes}/{total_bytes} ({eta}) {msg}",
-                )
-                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+    let expected_total = head.content_length().filter(|&n| n > 0);
+    let accepts_range = head
+        .headers()
+        .get(reqwest::header::ACCEPT_RANGES)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("bytes"))
+        .unwrap_or(false);
+
+    // 2. Decide where to start (resume vs fresh).
+    let existing = fs::metadata(dest).ok().map(|m| m.len()).unwrap_or(0);
+    let mut start = 0u64;
+    if let Some(total) = expected_total {
+        if existing == total {
+            eprintln!(
+                "[download] already complete: {} ({existing} bytes)",
+                dest.display()
             );
-            pb.set_message("downloading");
-            pb
+            return Ok(());
         }
-        None => {
-            let pb = ProgressBar::new_spinner();
-            pb.set_message("downloading (size unknown)");
-            pb
+        if existing > total {
+            eprintln!("[download] cached file too large ({existing} > {total}); starting over");
+            let _ = fs::remove_file(dest);
+        } else if existing > 0 && accepts_range {
+            start = existing;
+            eprintln!(
+                "[download] resuming at byte {start}/{total} ({:.1}% done)",
+                start as f64 / total as f64 * 100.0
+            );
+        } else if existing > 0 {
+            eprintln!("[download] server doesn't advertise Accept-Ranges; restarting from 0");
+            let _ = fs::remove_file(dest);
         }
+    } else if existing > 0 && accepts_range {
+        // Total unknown but cache exists. Try to resume optimistically.
+        start = existing;
+        eprintln!("[download] total unknown; optimistically resuming at byte {start}");
+    }
+
+    // 3. Issue GET (with Range if resuming).
+    let mut req = client.get(url);
+    if start > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={start}-"));
+    }
+    let mut resp = req.send()?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("GET {url} returned HTTP {status}");
+    }
+    // If we asked for a range but got 200 OK, the server ignored
+    // Range — start over from byte 0.
+    if start > 0 && status.as_u16() != 206 {
+        eprintln!("[download] server returned {status} for Range request; restarting from 0");
+        let _ = fs::remove_file(dest);
+        start = 0;
+    }
+
+    // 4. Open destination in the right mode + set up progress bar.
+    let total = expected_total.unwrap_or(0);
+    let pb = if total > 0 {
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::with_template("{bar:40.cyan/blue} {bytes}/{total_bytes} ({eta}) {msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        );
+        pb.set_position(start);
+        pb.set_message(if start > 0 { "resuming" } else { "downloading" });
+        pb
+    } else {
+        let pb = ProgressBar::new_spinner();
+        pb.set_message("downloading (size unknown)");
+        pb
     };
 
-    let mut out = fs::File::create(dest)?;
+    let mut out = if start > 0 {
+        fs::OpenOptions::new().append(true).open(dest)?
+    } else {
+        fs::File::create(dest)?
+    };
     let mut buf = [0u8; 64 * 1024];
-    let mut total: u64 = 0;
+    let mut written = start;
     loop {
         let n = resp.read(&mut buf)?;
         if n == 0 {
             break;
         }
         out.write_all(&buf[..n])?;
-        total += n as u64;
-        pb.set_position(total);
+        written += n as u64;
+        pb.set_position(written);
     }
     pb.finish_with_message(format!("downloaded → {}", dest.display()));
+
+    // 5. Final sanity check.
+    if let Some(total) = expected_total {
+        if written != total {
+            bail!(
+                "download truncated: wrote {written} bytes, expected {total}. \
+                 Re-run to resume."
+            );
+        }
+    }
     Ok(())
 }
 
