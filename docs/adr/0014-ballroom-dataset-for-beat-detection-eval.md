@@ -56,3 +56,13 @@ tempo accuracy 2.
   present).
 - We do not catch regressions on the harder material (jazz, ambient).
   Acceptable trade-off given the target use case.
+
+**Update 2026-05-10**: Ballroom + GiantSteps Tempo are now automated
+via `cargo xtask-fetch-{ballroom,giantsteps}`. SMC_MIREX harness is
+present (`tests/dataset_smc.rs`) but the canonical INESC mirror is
+currently unreliable; the fetcher prints manual-fallback instructions
+on outage. GiantSteps adds a tempo-only A/B harness
+(`tests/dataset_giantsteps.rs`) closer to the BeatPulse / Daslight
+target use case (EDM full mixes) than Ballroom's ballroom-dance
+material. None of the new dataset tests run in CI — they remain
+opt-in via the `dataset-tests` cargo feature + per-dataset env vars.

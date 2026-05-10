@@ -11,6 +11,9 @@
 
 #![allow(dead_code)] // each integration test only uses a subset
 
+#[cfg(feature = "dataset-tests")]
+pub mod audio;
+
 use beatpulse::dsp::beat_pll::BeatPll;
 use beatpulse::dsp::beat_tracker::BeatTracker;
 use beatpulse::dsp::consensus_tracker::ConsensusTracker;

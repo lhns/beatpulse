@@ -166,8 +166,9 @@ panics on heap allocation in `process`. Tests:
 | Dataset            | Role                | Gate                          | Distribution            |
 |--------------------|---------------------|-------------------------------|-------------------------|
 | Synthetic clicks   | Always-runs in CI   | Hard: F-measure ≥ 0.95        | In-tree, `tests/data/synthetic/` |
-| Ballroom           | Primary acceptance  | Hard: F-measure ≥ 0.70 aggregate, no individual track < 0.50 | External, `BEATPULSE_BALLROOM_DIR` |
-| SMC_MIREX          | Stress test         | Soft: report only             | External, `BEATPULSE_SMC_DIR`     |
+| Ballroom           | Primary acceptance  | Hard: F-measure ≥ 0.70 aggregate, no individual track < 0.50 | External, `BEATPULSE_BALLROOM_DIR` (fetcher: `cargo xtask-fetch-ballroom`) |
+| GiantSteps Tempo   | EDM A/B (consensus) | Soft: report ΔTA1/ΔTA2        | External, `BEATPULSE_GIANTSTEPS_DIR` (fetcher: `cargo xtask-fetch-giantsteps`) |
+| SMC_MIREX          | Hard-cases stress   | Soft: report only             | External, `BEATPULSE_SMC_DIR` (mirror flaky; manual fallback documented) |
 
 ### 5.2 Metrics (Rust impl in `tests/eval/metrics.rs`)
 
@@ -193,11 +194,40 @@ cargo test --features dataset-tests -- --nocapture
 ```
 
 `cargo xtask-fetch-ballroom` is feature-gated so the deps it needs
-(reqwest, flate2, tar, sha2, indicatif) don't enter the regular
-`cargo xtask bundle …` build path. See `xtask/Cargo.toml` and the
-alias in `.cargo/config.toml`. It downloads the MTG ISMIR 2004 audio
-mirror and clones the CPJKU annotation repo, pairing `.beats` next to
-each `.wav` under `tests/data/local/ballroom/audio/` (gitignored).
+(reqwest, flate2, tar, sha2, md-5, indicatif) don't enter the regular
+`cargo xtask bundle …` build path. See `xtask/Cargo.toml` (the
+`fetch-datasets` cargo feature) and the aliases in `.cargo/config.toml`.
+It downloads the MTG ISMIR 2004 audio mirror and clones the CPJKU
+annotation repo, pairing `.beats` next to each `.wav` under
+`tests/data/local/ballroom/audio/` (gitignored).
+
+**GiantSteps Tempo** (664 × 2-min EDM previews — exact genre match for
+the Daslight DMX use case):
+
+```powershell
+cargo xtask-fetch-giantsteps
+$env:BEATPULSE_GIANTSTEPS_DIR = "<repo>/tests/data/local/giantsteps/audio"
+cargo test --features dataset-tests --test dataset_giantsteps -- --nocapture
+```
+
+Audio is per-track (one MP3 per HTTP request) from JKU's stable mirror
+with the Beatport CDN as fallback. **Best-effort**: any track whose URL
+has rotted is skipped + logged; the test runs against whatever survived.
+Final summary reports `<ok>/<total>` and skip reasons. Tempo-only
+ground truth (`<id>.LOFI.bpm` = single integer) → harness scores
+**TA1** (within ±4 %) and **TA2** (octave-tolerant), no F-measure.
+
+**SMC_MIREX** (217 × 40s adversarial clips):
+
+```powershell
+cargo xtask-fetch-smc            # tries the canonical INESC mirror
+# If the mirror is down (currently common), follow the printed
+# manual-fallback instructions: place wav + .txt files under
+# tests/data/local/smc/audio/, then:
+cargo xtask-fetch-smc --skip-download   # verifies the layout
+$env:BEATPULSE_SMC_DIR = "<repo>/tests/data/local/smc/audio"
+cargo test --features dataset-tests --test dataset_smc -- --nocapture
+```
 
 The harness:
 

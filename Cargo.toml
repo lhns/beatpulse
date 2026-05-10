@@ -33,6 +33,11 @@ serde_json = "1"
 # Cargo. Pays a one-time wgpu compile cost on `cargo test` builds.
 egui_kittest = { version = "0.31", features = ["wgpu", "snapshot"] }
 image = "0.25"
+# Multi-format audio decode for the dataset harnesses (GiantSteps is
+# MP3, Ballroom/SMC are WAV). Pure-Rust; isolated to test code via
+# tests/common/audio.rs which is only used under #[cfg(feature =
+# "dataset-tests")].
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "pcm"] }
 
 [features]
 default = []

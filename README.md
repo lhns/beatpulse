@@ -98,7 +98,9 @@ to `C:\Program Files\Common Files\` requires an elevated PowerShell.
 cargo test                                          # 80 default tests
 cargo test --features link-integration              # + 1 Ableton Link loopback test (~40 s)
 cargo xtask-fetch-ballroom                          # one-time: download Ballroom dataset to tests/data/local/
-cargo test --features dataset-tests                 # + Ballroom F-measure (set BEATPULSE_BALLROOM_DIR)
+cargo xtask-fetch-giantsteps                        # one-time: download GiantSteps EDM previews
+cargo xtask-fetch-smc                               # SMC_MIREX (canonical mirror flaky; manual fallback printed)
+cargo test --features dataset-tests                 # + dataset evals (set the corresponding *_DIR env vars)
 cargo test --features ui-snapshots                  # + UI snapshots → tests/data/output/*.png
 ```
 

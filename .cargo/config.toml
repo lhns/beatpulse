@@ -1,3 +1,5 @@
 [alias]
 xtask = "run --package xtask --release --"
-xtask-fetch-ballroom = "run --package xtask --release --features fetch-ballroom -- fetch-ballroom"
+xtask-fetch-ballroom   = "run --package xtask --release --features fetch-datasets -- fetch ballroom"
+xtask-fetch-giantsteps = "run --package xtask --release --features fetch-datasets -- fetch giantsteps"
+xtask-fetch-smc        = "run --package xtask --release --features fetch-datasets -- fetch smc"

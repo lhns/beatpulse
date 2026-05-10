@@ -114,6 +114,16 @@ Last refreshed against `main` after commit `f6b212c`-area work.
 - BPM-correctness on noisy input (% of beats within ±5 % of truth):
   **0.21 → 0.77** (+56 pp).
 
+**Real-audio evaluation** (gated on `--features dataset-tests`, run
+locally after fetching datasets — not part of CI):
+
+- Ballroom (`ballroom_compare`): per-beat F-measure A/B. *TODO populate
+  Δ after first run.*
+- GiantSteps Tempo (`giantsteps_compare`): EDM tempo accuracy A/B
+  (TA1 / TA2). *TODO populate Δ after first run.*
+- SMC_MIREX (`smc_compare`): adversarial F-measure A/B. *TODO populate
+  Δ after first run (mirror flaky; manual fallback documented).*
+
 σ of reported BPM is *not* a useful proxy here: reactive has low σ even
 when locked on the wrong tempo (smooth drift); consensus has high σ
 because each commit is a discrete period snap. See

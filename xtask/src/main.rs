@@ -7,29 +7,41 @@
 // the terms of the GNU General Public License version 3 as published by the
 // Free Software Foundation.
 
-#[cfg(feature = "fetch-ballroom")]
-mod fetch_ballroom;
+#[cfg(feature = "fetch-datasets")]
+mod fetch;
 
 fn main() -> nih_plug_xtask::Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("fetch-ballroom") {
-        args.remove(0);
-        return run_fetch_ballroom(&args);
+    if let Some(first) = args.first().cloned() {
+        // `cargo xtask fetch <dataset> ...`
+        if first == "fetch" {
+            args.remove(0);
+            return run_fetch(&args);
+        }
+        // Back-compat: `cargo xtask fetch-<dataset> ...` is rewritten to
+        // `fetch <dataset> ...`.
+        if let Some(dataset) = first.strip_prefix("fetch-") {
+            let dataset = dataset.to_string();
+            args.remove(0);
+            let mut new_args = vec![dataset];
+            new_args.extend(args);
+            return run_fetch(&new_args);
+        }
     }
     nih_plug_xtask::main()
 }
 
-#[cfg(feature = "fetch-ballroom")]
-fn run_fetch_ballroom(args: &[String]) -> nih_plug_xtask::Result<()> {
-    fetch_ballroom::run(args)
+#[cfg(feature = "fetch-datasets")]
+fn run_fetch(args: &[String]) -> nih_plug_xtask::Result<()> {
+    fetch::run(args)
 }
 
-#[cfg(not(feature = "fetch-ballroom"))]
-fn run_fetch_ballroom(_args: &[String]) -> nih_plug_xtask::Result<()> {
+#[cfg(not(feature = "fetch-datasets"))]
+fn run_fetch(_args: &[String]) -> nih_plug_xtask::Result<()> {
     Err(std::io::Error::other(
-        "fetch-ballroom requires the `fetch-ballroom` feature. \
-         Use `cargo xtask-fetch-ballroom …` (see .cargo/config.toml) \
-         instead of `cargo xtask fetch-ballroom …`.",
+        "fetch subcommand requires the `fetch-datasets` feature. \
+         Use `cargo xtask-fetch-{ballroom,giantsteps,smc} …` (see \
+         .cargo/config.toml) instead of `cargo xtask fetch …`.",
     )
     .into())
 }
