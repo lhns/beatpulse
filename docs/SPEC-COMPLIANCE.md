@@ -105,23 +105,39 @@ Last refreshed against `main` after commit `f6b212c`-area work.
 | Reset on silence-end / manual resync                                | ✅      |                                                |
 | Default tracking mode unchanged (`Reactive`)                        | ✅      | Opt-in via `tracking_mode` param.              |
 
-**Quantified effect** (in-tree synthetic A/B, `cargo test`):
+**Quantified effect** (in-tree synthetic A/B, `cargo test`, post-fix
+2026-05-11):
 
 - Noisy clicks (120 BPM + 30 % spurious offbeats):
-  F-measure **0.51 → 0.84** (+0.33).
-- Full-mix kick + offbeat tonal stab: octave-tolerant tempo accuracy
-  **fail → pass**.
+  F-measure **0.31 → 0.86** (+0.55).
+- Full-mix kick + offbeat tonal stab: both modes pass octave-tolerant
+  tempo accuracy after the harness fix (reactive emits ~60 PLL beats,
+  consensus locks more conservatively).
 - BPM-correctness on noisy input (% of beats within ±5 % of truth):
-  **0.21 → 0.77** (+56 pp).
+  **0.18 → 0.79** (+61 pp).
 
 **Real-audio evaluation** (gated on `--features dataset-tests`, run
 locally after fetching datasets — not part of CI):
 
-- **Ballroom** (`ballroom_compare`, n=698, measured 2026-05-10):
-  reactive F=0.346, consensus F=0.536, **ΔF = +0.190**. Consensus
-  better on **671/698 tracks (96 %)**, reactive better on 20, tied on 7.
-  TA2 0.150 → 0.311 (+16 pp). Confirms the synthetic finding at scale
-  on real (ballroom-dance) audio.
+- **Ballroom** (`ballroom_compare`, n=698, measured 2026-05-11 after
+  test-harness fix): reactive F=0.288, consensus F=0.436,
+  **ΔF = +0.148**. Consensus better on **572/698 tracks (82 %)**,
+  reactive better on 114, tied on 12. TA2 0.285 → 0.428 (+14 pp).
+  *Note*: the original 2026-05-10 run reported ΔF=+0.190 with reactive
+  F=0.346, but that was inflated by a `run_pipeline` wrap-detection
+  bug (false-positive beats from per-onset phase corrections). After
+  switching the test harness to the production `PulseGenerator` code
+  path, the corrected delta is +0.148 — qualitatively the same
+  conclusion (consensus wins on most full-mix tracks), magnitude
+  smaller.
+- *Open*: both modes' absolute F-measure on Ballroom (≈ 0.29 / 0.44)
+  trails the literature's ~0.75-0.85 figure for aubio + PLL trackers.
+  Brief audit (`onset_method_audit.rs`, Jive subset n=60) found all
+  7 aubio onset methods cluster at F=0.36-0.45 — the gap is
+  structural (PLL tuning, annotation alignment, mono downmix?), not a
+  one-flip parameter fix. Tracking as a follow-up; the user-facing
+  takeaway is Consensus > Reactive on full-mix material, not "we hit
+  the literature SOTA".
 - GiantSteps Tempo (`giantsteps_compare`): not measurable as of
   2026-05-10 — both upstream audio mirrors (JKU + Beatport CDN) are
   dead. Harness ready if audio resurfaces.

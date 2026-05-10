@@ -44,8 +44,8 @@ See [`BeatPulse-SPEC.md`](BeatPulse-SPEC.md) for the design and
   full-mix input, at the cost of `lookahead` of latency. Compensate
   via the existing Latency offset slider (rule of thumb:
   `≈ -lookahead/2`). On the Ballroom dataset (698 real recordings),
-  consensus mode improves F-measure from 0.35 to 0.54 (+0.19) and wins
-  on 96 % of tracks. See ADR-0026.
+  consensus mode improves F-measure from 0.29 to 0.44 (+0.15) and wins
+  on 82 % of tracks. See ADR-0026.
 - **Latency calibration.** Per-instance `Latency offset` slider
   (±200 ms) so DMX cues align with the perceived audio after host
   buffer + driver + speaker delay.

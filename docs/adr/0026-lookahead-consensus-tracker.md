@@ -40,3 +40,13 @@ Per-onset PLL feedback is bypassed in this mode; every other downstream stage (P
 ## Out of scope
 
 Neural beat tracker (option 2 from chat) — separate, larger project (M5). Source separation upstream — explicitly skipped per chat. Tempogram / autocorrelation alternatives to median IOI — over-engineering for v1; revisit if median proves inadequate. Auto-setting `latency_offset_ms` based on `lookahead_ms` — silent parameter coupling rejected as a UX footgun.
+
+## Update 2026-05-11
+
+The first Ballroom A/B run (commit `c589c89`, 2026-05-10) reported reactive F=0.346, consensus F=0.536, ΔF=+0.190 with consensus better on 96 % of tracks. **Those numbers were inflated by a test-harness bug.** `tests/common/mod.rs::run_pipeline` used a naive wrap detector (`phase_samples < prev_phase`) that fired on every small backward phase correction `BeatPll::on_onset` makes. Reactive mode (which calls `on_onset` per detected onset) was therefore emitting a flood of false-positive "beats", many of which coincidentally landed near true beats and inflated F-measure recall; consensus mode (which doesn't call `on_onset`) was barely affected.
+
+Fix: route the test harness through the production `PulseGenerator::new(1)` (PPQN=1 = beat boundaries only). It already implements the >50 %-period wrap test and the monotonic `last_pulse_index` guard, and is the same code that drives the production LED + MIDI output, so the test now measures what the user actually hears/sees.
+
+Corrected Ballroom numbers (n=698, 2026-05-11): reactive F=0.288, consensus F=0.436, **ΔF=+0.148**, consensus better on 572/698 (82 %), reactive better on 114, tied on 12. The qualitative conclusion of this ADR is unchanged: consensus mode is a real improvement on full-mix audio and is the recommended setting for the Daslight DMX use case. Magnitude of the improvement is smaller than the buggy first measurement claimed, but still substantive and consistent across in-tree synthetic A/B (ΔF=+0.55 on 30 % spurious-onset clicks) and real audio (+0.15 on 698 Ballroom tracks).
+
+Both modes' absolute F-measure on Ballroom (~0.29 / ~0.44) is well below the literature's ~0.75–0.85 for aubio + PLL trackers. A brief audit (`tests/onset_method_audit.rs`, Jive subset n=60) found all 7 aubio onset methods cluster at F=0.36–0.45 — the gap is not a one-flip parameter fix and is tracked as a follow-up. It does not change the consensus-vs-reactive recommendation.
