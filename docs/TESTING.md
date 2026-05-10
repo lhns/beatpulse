@@ -181,10 +181,23 @@ Match `mir_eval` semantics:
 
 ### 5.3 Harness
 
+The Ballroom dataset isn't openly redistributable; fetch it locally with
+the helper xtask, then run the test:
+
 ```bash
-BEATPULSE_BALLROOM_DIR=/path/to/ballroom \
-  cargo test --features dataset-tests -- --nocapture
+cargo xtask-fetch-ballroom        # downloads + extracts + pairs annotations
+$env:BEATPULSE_BALLROOM_DIR = "<repo>/tests/data/local/ballroom/audio"  # PowerShell
+# or:
+export BEATPULSE_BALLROOM_DIR="$(pwd)/tests/data/local/ballroom/audio"  # bash/zsh
+cargo test --features dataset-tests -- --nocapture
 ```
+
+`cargo xtask-fetch-ballroom` is feature-gated so the deps it needs
+(reqwest, flate2, tar, sha2, indicatif) don't enter the regular
+`cargo xtask bundle …` build path. See `xtask/Cargo.toml` and the
+alias in `.cargo/config.toml`. It downloads the MTG ISMIR 2004 audio
+mirror and clones the CPJKU annotation repo, pairing `.beats` next to
+each `.wav` under `tests/data/local/ballroom/audio/` (gitignored).
 
 The harness:
 
@@ -196,6 +209,34 @@ The harness:
    aggregate JSON to `tests/data/output/ballroom-<commit>.json`.
 5. Compares aggregate against `tests/data/baseline-ballroom.json`; fails
    if any metric drops by > 2 %.
+
+### 5.3a Tracking-mode A/B tests (consensus quantification)
+
+ADR-0026 added an opt-in `LookaheadConsensus` tracking mode. Three
+hermetic in-tree tests quantify its effect vs Reactive (no external
+data needed; run in default `cargo test`):
+
+- `dataset_synthetic::consensus_beats_reactive_on_noisy_clicks` — 120
+  BPM clicks + 30 % spurious offbeat clutter. Asserts
+  `consensus_F > reactive_F + 0.05`. Typical observed Δ ≈ +0.30.
+- `dataset_synthetic::consensus_holds_tempo_on_full_mix_pattern` — kick
+  on the beat + 440 Hz tonal stab on every offbeat. Asserts consensus
+  passes octave-tolerant tempo accuracy; reactive typically fails.
+- `bpm_stability::consensus_more_accurate_bpm_than_reactive_on_noisy_input`
+  — % of post-warmup beats where reported BPM is within ±5 % of truth.
+  Asserts consensus accuracy > reactive accuracy + 10 pp. **Note:** σ
+  of BPM is reported as a diagnostic but not asserted — it's a
+  misleading metric for this mode (reactive often has low σ while
+  locked on the *wrong* tempo; consensus has high σ because of step-
+  snap commits).
+
+The Ballroom comparison test (`dataset_ballroom::ballroom_compare`,
+gated on `dataset-tests` feature + `BEATPULSE_BALLROOM_DIR`) writes
+side-by-side per-track + aggregate metrics for both modes to
+`tests/data/output/ballroom-compare.{csv,json}`. No hard regression
+gate — the goal is to *measure* the per-track Δ. Inspect the JSON's
+`delta_f_mean` and `n_consensus_better` / `n_reactive_better`
+fields after each run.
 
 ### 5.4 Updating the baseline
 

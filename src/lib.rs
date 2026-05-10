@@ -288,25 +288,17 @@ impl Plugin for Beatpulse {
                 (params.latency_offset_ms.value() / 1000.0 * dsp.sample_rate) as i32;
             let tracking_mode = params.tracking_mode.value();
 
-            // Lookahead-consensus path: ingest all onsets up-front, prune
-            // stale ones, and snap the PLL when the consensus tracker
-            // commits. The per-sample loop below then only advances phase
-            // and emits pulses (no per-onset PLL feedback). See ADR-0026.
+            // Lookahead-consensus path: ingest all onsets up-front, then
+            // let the tracker prune + snap the PLL atomically via
+            // `try_snap_pll`. The per-sample loop below only advances
+            // phase and emits pulses (no per-onset PLL feedback). See
+            // ADR-0026.
             if matches!(tracking_mode, TrackingMode::LookaheadConsensus) {
                 for (_, abs_sample) in onsets.iter().take(n_onsets) {
                     dsp.consensus.on_onset(*abs_sample);
                 }
-                let block_end_abs = block_start.wrapping_add(n_samples as u64);
-                dsp.consensus.prune(block_end_abs);
-                if let Some(consensus_period) = dsp.consensus.dominant_period() {
-                    dsp.pll.period_samples = consensus_period;
-                    if let Some(recent) = dsp.consensus.most_recent_onset() {
-                        dsp.pll.last_onset_sample = Some(recent as f64);
-                        let elapsed = block_start as f64 - recent as f64;
-                        dsp.pll.phase_samples = elapsed.rem_euclid(consensus_period);
-                        dsp.pll.locked = true;
-                    }
-                }
+                dsp.consensus
+                    .try_snap_pll(&mut dsp.pll, block_start, n_samples as u64);
             }
 
             let mut next_onset = 0usize;

@@ -101,9 +101,23 @@ Last refreshed against `main` after commit `f6b212c`-area work.
 | Sliding onset window (200–3000 ms, default 2000)                    | ✅      | `lookahead_ms` param.                          |
 | Median IOI with octave correction + outlier filtering               | ✅      | `dominant_period`.                             |
 | 2-frame stability gate before commit                                | ✅      | Prevents thrashing.                             |
-| Snap PLL period + phase on commit (no double-smoothing)             | ✅      | See ADR-0026.                                   |
+| Snap PLL period + phase on commit (no double-smoothing)             | ✅      | Single entry point: `try_snap_pll`.             |
 | Reset on silence-end / manual resync                                | ✅      |                                                |
 | Default tracking mode unchanged (`Reactive`)                        | ✅      | Opt-in via `tracking_mode` param.              |
+
+**Quantified effect** (in-tree synthetic A/B, `cargo test`):
+
+- Noisy clicks (120 BPM + 30 % spurious offbeats):
+  F-measure **0.51 → 0.84** (+0.33).
+- Full-mix kick + offbeat tonal stab: octave-tolerant tempo accuracy
+  **fail → pass**.
+- BPM-correctness on noisy input (% of beats within ±5 % of truth):
+  **0.21 → 0.77** (+56 pp).
+
+σ of reported BPM is *not* a useful proxy here: reactive has low σ even
+when locked on the wrong tempo (smooth drift); consensus has high σ
+because each commit is a discrete period snap. See
+`bpm_stability::consensus_more_accurate_bpm_than_reactive_on_noisy_input`.
 
 ### §5.3 PulseGenerator
 

@@ -19,6 +19,8 @@
 
 use std::collections::VecDeque;
 
+use crate::dsp::beat_pll::BeatPll;
+
 /// Tolerance used to declare two consecutive consensus periods "the same"
 /// for the stability gate.
 const STABILITY_TOL: f64 = 0.005;
@@ -136,6 +138,32 @@ impl ConsensusTracker {
         } else {
             None
         }
+    }
+
+    /// Prune the onset buffer at `block_end_abs`, run the consensus
+    /// computation, and snap `pll`'s period + phase if a new consensus
+    /// commits this block. Returns `true` on commit. This is the single
+    /// snap entry point used by both `Plugin::process` (`src/lib.rs`) and
+    /// the integration tests in `tests/`.
+    pub fn try_snap_pll(
+        &mut self,
+        pll: &mut BeatPll,
+        block_start_abs: u64,
+        block_len: u64,
+    ) -> bool {
+        let block_end_abs = block_start_abs.wrapping_add(block_len);
+        self.prune(block_end_abs);
+        let Some(consensus_period) = self.dominant_period() else {
+            return false;
+        };
+        pll.period_samples = consensus_period;
+        if let Some(recent) = self.most_recent_onset() {
+            pll.last_onset_sample = Some(recent as f64);
+            let elapsed = block_start_abs as f64 - recent as f64;
+            pll.phase_samples = elapsed.rem_euclid(consensus_period);
+            pll.locked = true;
+        }
+        true
     }
 }
 

@@ -15,3 +15,6 @@
 
 # Dataset evaluation output
 /tests/data/output/
+
+# Local-only test data (downloaded by `cargo xtask-fetch-ballroom`)
+/tests/data/local/

@@ -15,6 +15,9 @@ use beatpulse::dsp::pulse_generator::PulseGenerator;
 use beatpulse::eval::{f_measure, tempo_accuracy_2, F_MEASURE_TOL, TEMPO_ACC_TOL};
 use beatpulse::params::OnsetMethod;
 
+mod common;
+use common::{run_pipeline, Mode};
+
 const SR: f64 = 44_100.0;
 
 fn make_clicks(total_samples: usize, click_samples: &[usize]) -> Vec<f32> {
@@ -178,5 +181,149 @@ fn synthetic_clicks_per_bpm_gates() {
     assert!(
         aggregate >= 0.93,
         "aggregate F-measure {aggregate:.3} < 0.93"
+    );
+}
+
+/// Add a 440 Hz tonal "stab" (snare-like) at each provided sample index.
+/// Used by the full-mix A/B test to simulate offbeat tonal onsets that
+/// fool a per-onset PLL.
+fn add_tones(buf: &mut [f32], stab_samples: &[usize], freq_hz: f32, gain: f32) {
+    let len = (0.060 * SR as f32) as usize;
+    let decay_tau = 0.030 * SR as f32;
+    for &t in stab_samples {
+        for i in 0..len {
+            let pos = t + i;
+            if pos < buf.len() {
+                let phase = 2.0 * std::f32::consts::PI * freq_hz * (i as f32) / SR as f32;
+                let env = (-(i as f32) / decay_tau).exp();
+                buf[pos] += gain * env * phase.sin();
+            }
+        }
+    }
+}
+
+/// Park-Miller LCG for deterministic test pseudo-randomness.
+fn lcg(seed: &mut u32) -> f32 {
+    *seed = seed.wrapping_mul(48271) % 2_147_483_647;
+    (*seed as f32 / 2_147_483_647.0) * 2.0 - 1.0
+}
+
+/// A/B: 120 BPM kick clicks plus ~30 % spurious offbeat clicks. The
+/// per-onset Reactive PLL gets pulled around by the spurious clicks,
+/// while the median-IOI Lookahead Consensus tracker should be robust to
+/// them. Locks in a meaningful (≥ 0.05 F-measure) but not razor-tight
+/// advantage; tolerates RNG drift.
+#[test]
+fn consensus_beats_reactive_on_noisy_clicks() {
+    const BPM: f64 = 120.0;
+    const DURATION_S: f64 = 30.0;
+    let total = (DURATION_S * SR) as usize;
+    let beat_period = SR * 60.0 / BPM;
+
+    // True beats.
+    let mut click_samples: Vec<usize> = Vec::new();
+    let mut t = 0.5 * SR;
+    while (t as usize) + 1 < total {
+        click_samples.push(t as usize);
+        t += beat_period;
+    }
+    let reference: Vec<f64> = click_samples.iter().map(|&s| s as f64 / SR).collect();
+
+    // Spurious offbeat clicks (~30 % of true beats), scattered ±200 ms
+    // around the half-beat with deterministic jitter.
+    let mut spur_samples: Vec<usize> = Vec::new();
+    let mut seed: u32 = 0xC0FFEE;
+    let n_spur = (click_samples.len() as f32 * 0.30) as usize;
+    for k in 0..n_spur {
+        let beat_idx = (k * 7 + 3) % click_samples.len();
+        let half = click_samples[beat_idx] as f64 + 0.5 * beat_period;
+        let jitter = lcg(&mut seed) as f64 * 0.200 * SR;
+        let p = (half + jitter) as usize;
+        if p < total {
+            spur_samples.push(p);
+        }
+    }
+    let mut all = click_samples.clone();
+    all.extend(spur_samples.iter().copied());
+    all.sort_unstable();
+    let signal = make_clicks(total, &all);
+
+    let est_reactive = run_pipeline(&signal, SR as u32, Mode::Reactive);
+    let est_consensus = run_pipeline(
+        &signal,
+        SR as u32,
+        Mode::Consensus {
+            lookahead_ms: 2000.0,
+        },
+    );
+
+    let f_reactive = f_measure(&reference, &est_reactive, F_MEASURE_TOL);
+    let f_consensus = f_measure(&reference, &est_consensus, F_MEASURE_TOL);
+    eprintln!(
+        "noisy_clicks: F_reactive={f_reactive:.3} F_consensus={f_consensus:.3} \
+         delta={:+.3}",
+        f_consensus - f_reactive
+    );
+
+    assert!(
+        f_consensus > f_reactive + 0.05,
+        "expected consensus to beat reactive by > 0.05 F-measure on noisy \
+         clicks; got reactive={f_reactive:.3} consensus={f_consensus:.3}"
+    );
+}
+
+/// A/B: 120 BPM kick + a 440 Hz tonal "snare" stab on every offbeat
+/// (n + 0.5). Mimics a kick-on-1-3 + snare-on-2-4 pattern. Both modes
+/// should land on a tempo within ±4 % including octaves; this test
+/// asserts that for the consensus mode and prints — but does not
+/// assert — the reactive result.
+#[test]
+fn consensus_holds_tempo_on_full_mix_pattern() {
+    const BPM: f64 = 120.0;
+    const DURATION_S: f64 = 30.0;
+    let total = (DURATION_S * SR) as usize;
+    let beat_period = SR * 60.0 / BPM;
+
+    let mut kick_samples: Vec<usize> = Vec::new();
+    let mut snare_samples: Vec<usize> = Vec::new();
+    let mut t = 0.5 * SR;
+    let mut beat_idx = 0;
+    while (t as usize) + 1 < total {
+        kick_samples.push(t as usize);
+        let snare = t + 0.5 * beat_period;
+        if (snare as usize) + 1 < total {
+            snare_samples.push(snare as usize);
+        }
+        t += beat_period;
+        beat_idx += 1;
+    }
+    let _ = beat_idx;
+    let reference: Vec<f64> = kick_samples.iter().map(|&s| s as f64 / SR).collect();
+
+    let mut signal = make_clicks(total, &kick_samples);
+    add_tones(&mut signal, &snare_samples, 440.0, 0.5);
+
+    let est_reactive = run_pipeline(&signal, SR as u32, Mode::Reactive);
+    let est_consensus = run_pipeline(
+        &signal,
+        SR as u32,
+        Mode::Consensus {
+            lookahead_ms: 2000.0,
+        },
+    );
+
+    let ta2_reactive = tempo_accuracy_2(&reference, &est_reactive, TEMPO_ACC_TOL);
+    let ta2_consensus = tempo_accuracy_2(&reference, &est_consensus, TEMPO_ACC_TOL);
+    eprintln!(
+        "full_mix_pattern: TA2_reactive={ta2_reactive} TA2_consensus={ta2_consensus} \
+         (n_ref={} n_react={} n_cons={})",
+        reference.len(),
+        est_reactive.len(),
+        est_consensus.len()
+    );
+
+    assert!(
+        ta2_consensus,
+        "consensus failed tempo_accuracy_2 on kick+offbeat-snare pattern"
     );
 }
