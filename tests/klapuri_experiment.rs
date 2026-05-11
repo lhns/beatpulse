@@ -108,8 +108,18 @@ fn klapuri_ballroom() {
     let mut sum_a = 0.0f64;
     let mut ta1 = 0usize;
     let mut ta2 = 0usize;
+    // Per-octave-ratio tally for the residual TA1 gap. Buckets the
+    // ratio est_bpm/truth_bpm into common octave/triplet errors.
+    let mut tally_correct = 0usize;
+    let mut tally_half = 0usize;
+    let mut tally_double = 0usize;
+    let mut tally_third = 0usize;
+    let mut tally_threehalf = 0usize;
+    let mut tally_twothird = 0usize;
+    let mut tally_other = 0usize;
+    let mut other_ratios: Vec<(f64, String, f64, f64)> = Vec::new();
     let n = bench.len();
-    for (audio, truth, _stem) in &bench {
+    for (audio, truth, stem) in &bench {
         let est = run_klapuri(audio);
         let s = Scoring::standard(truth, &est);
         sum_f += s.f_measure;
@@ -120,6 +130,49 @@ fn klapuri_ballroom() {
         if s.tempo_acc_2 {
             ta2 += 1;
         }
+        // Bucket the ratio.
+        let truth_bpm = if truth.len() < 2 {
+            0.0
+        } else {
+            let mut iv = Vec::with_capacity(truth.len() - 1);
+            for w in truth.windows(2) {
+                iv.push(w[1] - w[0]);
+            }
+            iv.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            60.0 / iv[iv.len() / 2]
+        };
+        let est_bpm = if est.len() < 2 {
+            0.0
+        } else {
+            let mut iv = Vec::with_capacity(est.len() - 1);
+            for w in est.windows(2) {
+                iv.push(w[1] - w[0]);
+            }
+            iv.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            60.0 / iv[iv.len() / 2]
+        };
+        if truth_bpm > 0.0 && est_bpm > 0.0 {
+            let r = est_bpm / truth_bpm;
+            let close = |x: f64, y: f64| (x - y).abs() < 0.04 * y.max(x);
+            if close(r, 1.0) {
+                tally_correct += 1;
+            } else if close(r, 0.5) {
+                tally_half += 1;
+            } else if close(r, 2.0) {
+                tally_double += 1;
+            } else if close(r, 1.0 / 3.0) {
+                tally_third += 1;
+            } else if close(r, 1.5) {
+                tally_threehalf += 1;
+            } else if close(r, 2.0 / 3.0) {
+                tally_twothird += 1;
+            } else {
+                tally_other += 1;
+                if other_ratios.len() < 30 {
+                    other_ratios.push((r, stem.clone(), truth_bpm, est_bpm));
+                }
+            }
+        }
     }
     let f_mean = sum_f / n as f64;
     let a_mean = sum_a / n as f64;
@@ -128,4 +181,15 @@ fn klapuri_ballroom() {
     println!("Klapuri:      F={f_mean:.3}  AMLt={a_mean:.3}  TA1={ta1_rate:.3}  TA2={ta2_rate:.3}");
     println!("AubioTempo:   F=0.590  AMLt=0.459  TA1=0.592  TA2=0.777  (reference)");
     println!("Verdict: ΔF(klapuri − aubio) = {:+.3}", f_mean - 0.590);
+    println!(
+        "  Tempo-ratio tally (est/truth ±4%): correct={tally_correct} half={tally_half} \
+         double={tally_double} third={tally_third} 3/2={tally_threehalf} 2/3={tally_twothird} \
+         other={tally_other}"
+    );
+    if !other_ratios.is_empty() {
+        println!("  Sample 'other'-ratio mismatches (up to 30):");
+        for (r, name, t, e) in &other_ratios {
+            println!("    ratio={r:.3}  truth={t:.1} est={e:.1}  {name}");
+        }
+    }
 }

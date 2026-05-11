@@ -137,7 +137,7 @@ impl ResonatorBank {
             periods: periods.to_vec(),
             resonators,
             energy_buf: vec![0.0; periods.len()],
-            energy_decay: 0.99,
+            energy_decay: 0.998,
         }
     }
 

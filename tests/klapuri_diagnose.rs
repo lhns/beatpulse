@@ -348,17 +348,26 @@ fn dump_inference_state(audio: &[f32]) {
     let mut inf = PeriodInference::new(oss_rate);
     let mut diag = DiagAccent::new(sr);
 
-    // Feed accent → bank in one pass.
+    // Feed accent → (per-band DC removal) → bank in one pass.
+    // Mirrors `KlapuriTracker::accent_step`'s DC-removal so the
+    // diagnostic reflects what the real tracker sees.
     let frames = diag.process_block(audio);
+    let mut accent_dc = [0.0f32; N_BANDS];
+    const ACCENT_DC_ALPHA: f32 = 0.99;
     for f in &frames {
-        bank.tick(*f);
+        let mut zm = [0.0f32; N_BANDS];
+        for b in 0..N_BANDS {
+            accent_dc[b] = ACCENT_DC_ALPHA * accent_dc[b] + (1.0 - ACCENT_DC_ALPHA) * f[b];
+            zm[b] = f[b] - accent_dc[b];
+        }
+        bank.tick(zm);
     }
 
-    // Raw energies + scores.
+    // Top-5 normalised resonator energies.
     let energies = bank.total_energies().to_vec();
     let mut idx: Vec<usize> = (0..energies.len()).collect();
     idx.sort_by(|&a, &b| energies[b].partial_cmp(&energies[a]).unwrap());
-    println!("  top-5 raw resonator energies:");
+    println!("  top-5 normalised resonator energies (post DC-removal):");
     for &i in idx.iter().take(5) {
         let tau = periods[i];
         let bpm = 60.0 * oss_rate / tau as f32;

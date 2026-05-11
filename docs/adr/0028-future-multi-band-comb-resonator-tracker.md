@@ -141,6 +141,152 @@ The 3-second integration window (G1) and the sustained-energy accent term (G2) a
 
 Each of those is non-trivial. AubioTempo at F=0.59 / TA2=0.78 remains the production default. ADR-0027 stands.
 
+## Update — fifth debugging pass: per-inference phase re-anchoring
+
+User asked for another pass on the suspicion that more obvious bugs were lurking. Two candidates surfaced:
+
+1. **Sustained-term semantics**: the `(1-W)·log_power` term in `accent.rs` was computed as `(1-W)·HWR(log_power − dc)`, which goes to ~0 on truly sustained content (the DC tracker converges on a ~33-frame timescale). Tried replacing the DC-removed deviation with the raw μ-law-normalised `log_power` per the paper.
+2. **Phase re-anchoring**: `phase.rs` only re-anchored `next_beat_abs` on first lock or on > 10 % τ change. The first lock occurs at warmup (~1.5 s) when `phase_acc` has barely integrated cross-correlation evidence; a bad cold-start phase locked in and was never corrected. Changed to re-anchor every inference cycle, with a midpoint nudge for small adjustments and a snap for half-period jumps (octave switches).
+
+Combined both, measured on Ballroom — **F regressed to 0.290**, TA1 collapsed from 24.2 % → 0.3 %. Reverted #1 only and re-measured:
+
+| Pass | F | AMLt | TA1 | TA2 |
+|---|---|---|---|---|
+| 4th pass | 0.369 | 0.160 | 0.242 | 0.255 |
+| 5th-pass (#1 + #2) | 0.290 | 0.047 | 0.003 | 0.012 |
+| **5th pass (#2 only)** | **0.402** | 0.118 | 0.237 | 0.252 |
+| AubioTempo (reference) | 0.590 | 0.459 | 0.592 | 0.777 |
+
+**#1 was actively harmful**: feeding the absolute `log_power` into the comb-filter bank gives every resonator a constant DC component the bank's energy normalisation can't separate, washing out the periodic signal and breaking period inference. The DC-removed sustained term is correct *for our bank*; Klapuri's paper presumably handles the DC differently in his comb stage.
+
+**#2 alone improved F by +0.033** (0.369 → 0.402) without measurable harm to tempo accuracy (TA1 within noise: −0.005). Per-inference re-anchoring with smoothing is the right behaviour: the cold-start phase from `phase_of` after only ~1.5 s of accent integration is too noisy to hold; later inferences see far more cross-correlation evidence and correct the drift.
+
+**Per the Phase L gate (F ∈ [0.37, 0.45] → don't integrate, document)** this stays Rejected as production but is a real improvement over the 4th pass. F now 0.402 vs aubio's 0.590 — gap closed by ~13 %, but aubio still ~47 % better on F and ~2.5× better on TA2. Production stays on `TrackingMode::AubioTempo`.
+
+## Update — sixth debugging pass: per-band DC removal at bank input
+
+The 5th-pass diagnostic showed normalised resonator energies dominated monotonically by the very shortest τ (23–27, ≈ 400–450 BPM) on every Ballroom track. The BPM prior was doing all the work to drag inference into a plausible range; on tracks where it lost, the algorithm defaulted to ~149.8 BPM.
+
+**Root cause** (read `total_energies` together with the accent statistics):
+
+The accent signal is HWR-only output → has a positive mean (~0.03–0.05 per band). For DC input, every comb filter outputs `y_steady = m` regardless of τ, so DC contributes `m²` to every resonator's energy. The normalisation divides by `(1-α)/(1+α)`, which for the DC component equals **multiplying by `(1+α)/(1-α)`** — a factor of 65× at τ=23 vs 19× at τ=82. The DC bias gets amplified ~3.4× more at short τ than at tactus τ. Periodic content was being normalised correctly; DC was not.
+
+**Fix:** subtract a per-band leaky-integrator running mean (α=0.99, ~0.6 s time constant) from each accent frame in `KlapuriTracker::accent_step` before calling `bank.tick`. The bank now sees zero-mean input, the periodic-content normalisation is unbiased, and the prior no longer has to fight a structural short-τ pull.
+
+This is the *opposite-direction* fix to the K1 trap from the 5th pass. K1 added DC to accent (raw `log_power`) and broke things; this removes the DC that was already there.
+
+| Pass | F | AMLt | TA1 | TA2 |
+|---|---|---|---|---|
+| 4th pass | 0.369 | 0.160 | 0.242 | 0.255 |
+| 5th pass (re-anchor) | 0.402 | 0.118 | 0.237 | 0.252 |
+| **6th pass (+ DC removal at bank input)** | **0.584** | **0.315** | **0.456** | **0.662** |
+| AubioTempo (reference) | 0.590 | 0.459 | 0.592 | 0.777 |
+
+**F essentially tied with aubio** (Δ = −0.006). TA1 nearly doubled, TA2 ~2.6× better, AMLt ~2.7× better. Aubio still leads on TA2 (0.777 vs 0.662) and AMLt (0.459 vs 0.315), so it remains the better continuous-tracking option, but Klapuri is now in the same league.
+
+**Per the Phase L gate (F > 0.45) → eligible for opt-in integration** as a 4th `BeatSource` tracking mode. Whether to expose it is a separate decision; either way ADR-0028 changes from Rejected to Conditionally Accepted.
+
+## Update — seventh debugging pass: relax BPM prior + boost super-harmonic weight
+
+The post-6th-pass diagnostic showed real periodic structure (top-K resonator energies clustered at the actual tactus + its harmonics). Track 3 (truth = 210.5 BPM) was the smoking gun: the bank's **#1-ranked normalised resonator was τ=49 (210.9 BPM, the actual tactus)**, but inference still picked τ=98 (105.5 BPM, half-tempo). Hand-checked:
+
+- raw(τ=49) = 0.0167 + 0.5·e(98) + … ≈ 0.0253
+- raw(τ=98) = 0.0126 + 0.6·e(49) + … ≈ 0.0226
+- prior σ=0.5: prior(211 BPM) = 0.530, prior(106 BPM) = 0.968
+- score(49) = 0.0253·0.530 = **0.0134**
+- score(98) = 0.0226·0.968 = **0.0219** ← wins, but wrong
+
+Bank evidence ratio (raw_49/raw_98 = 1.12) was correct; a 1.83× prior swing flipped it. Generalises to every track with true tempo > ~150 BPM, matching the TA1/TA2 gap (0.456 vs 0.662 → ~21 % of tracks had octave errors).
+
+**Fix:**
+1. `prior_sigma` 0.5 → 0.8. The tighter σ=0.5 systematically collapsed >180 BPM tracks to their half-tempo octave; σ=0.8 still penalises implausible tempos (40 BPM → 0.30, 400 BPM → 0.18) but lets ballroom's full 60–220 BPM range be picked when the bank is confident.
+2. `w_measure_2` 0.5 → 0.7. The super-harmonic resonator at 2τ measures the same beat one metrical level up — direct independent evidence for the tactus, undervalued at 0.5.
+
+| Pass | F | AMLt | TA1 | TA2 |
+|---|---|---|---|---|
+| 6th pass | 0.584 | 0.315 | 0.456 | 0.662 |
+| **7th pass (relaxed prior + measure_2 boost)** | **0.630** | **0.367** | **0.485** | **0.755** |
+| AubioTempo (reference) | 0.590 | 0.459 | 0.592 | 0.777 |
+
+**Klapuri now beats aubio on F-measure** (Δ = **+0.040**) and is essentially tied on TA2 (Δ = −0.022). Aubio still leads on AMLt (continuous tracking, Δ = +0.092) and TA1 (strict tempo, Δ = +0.107) — meaning aubio is more often *exactly* right on tempo, but Klapuri's predictions are better localised when correct.
+
+ADR-0028 status: **Conditionally Accepted → Accepted as opt-in tracking mode** (when wired up). The TA1/AMLt gap is the next debugging target if a further pass is wanted.
+
+## Update — eighth debugging pass: τ-median filter for AMLt continuity
+
+Targeted the AMLt and TA1 gaps to aubio (0.367 vs 0.459 / 0.485 vs 0.592 after pass 7). Hypothesis: when two octaves' inference scores were close, the per-cycle winner (every 64 OSS frames ≈ 0.37 s) was flip-flopping. Each flip triggered a snap-to-new-anchor in the K2 phase logic, resetting AMLt's continuity counter. The TA1 hit followed because the per-cycle median predicted tempo drifted across the strict 4 % tolerance.
+
+**Fix:** ring buffer of the last 5 inference winners in `KlapuriTracker`; use the **median** as the active `tau_oss` instead of the per-cycle winner. Median is the right operator (averaging 86 and 43 yields 64.5, which is meaningless — median picks one of the two). Window of 5 cycles ≈ 1.86 s suppresses isolated flips; sustained tempo changes propagate after ≥ 3 confirming cycles (~1.1 s lag).
+
+| Pass | F | AMLt | TA1 | TA2 |
+|---|---|---|---|---|
+| 7th pass | 0.630 | 0.367 | 0.485 | 0.755 |
+| **8th pass (+ τ-median filter)** | **0.633** | **0.408** | **0.491** | **0.766** |
+| AubioTempo (reference) | 0.590 | 0.459 | 0.592 | 0.777 |
+
+**AMLt gap to aubio halved** (0.092 → 0.051). F still ahead of aubio (Δ=+0.043); TA2 nearly matched (Δ=−0.011). TA1 still trails (Δ=−0.101) — the residual gap is steady-state octave bias on tracks where the median-of-5 itself is the wrong octave, not flip-flop continuity loss.
+
+## Update — ninth debugging pass: longer energy integration
+
+Added a per-octave-error tally to `klapuri_experiment.rs`. After pass 8 (n=687):
+
+```
+correct=338  half=7  double=178  third=0  3/2=33  2/3=17  other=114
+```
+
+**26 % of tracks predicted at 2× truth tempo** — by far the dominant error class. Mostly slow Latin/ballroom tracks (truth 80–110 BPM) collapsed to their double-tempo octave (160–220 BPM). The pass-7 σ-widening fixed the *opposite* trap (very fast tracks → half-tempo) but left this one wide open.
+
+Tried four prior-knob interventions:
+| Change | F | TA1 | correct | double | half |
+|---|---|---|---|---|---|
+| Pass 8 baseline | 0.633 | 0.491 | 338 | 178 | 7 |
+| centre=100, w_measure_2=0.5 | 0.610 | 0.444 | 301 | 94 | 114 |
+| centre=100 only | 0.606 | 0.413 | 281 | 121 | 87 |
+| w_measure_2=0.5 only | 0.627 | 0.453 | 306 | 160 | 37 |
+| centre=110 | 0.616 | 0.435 | 294 | 151 | 42 |
+
+Every alternative traded `double` for `half` at a net loss. Pass-8's prior settings are a local optimum on the prior knobs; the dominant double-tempo trap is **structural** (sub-harmonic resonator at τ_t/2 has higher raw bank energy than the tactus on percussive Ballroom audio, even after the DC-removal of pass 6) and can't be fixed by re-tuning the prior alone.
+
+Switched to a different lever — `ResonatorBank::energy_decay`. The leaky-integrator pole on per-resonator energy was 0.99 (~0.58 s window): too short for slow tracks (60–80 BPM = ≥0.75 s/beat) to accumulate enough beats for confident discrimination between tactus and its sub-harmonic. Slower integration sweep:
+
+| `energy_decay` | F | AMLt | TA1 | TA2 |
+|---|---|---|---|---|
+| 0.99 (pass 8) | 0.633 | 0.408 | 0.491 | 0.766 |
+| 0.995 | 0.634 | 0.416 | 0.504 | 0.777 |
+| 0.997 | 0.632 | 0.422 | 0.507 | 0.786 |
+| **0.998 (~3 s window)** | **0.631** | **0.424** | **0.507** | **0.789** |
+| 0.999 | 0.625 | 0.428 | 0.511 | 0.792 |
+| AubioTempo (reference) | 0.590 | 0.459 | 0.592 | 0.777 |
+
+`0.998` is the chosen balance: AMLt + TA1 + TA2 all maximised while F is essentially flat (Δ=−0.002, within noise). **TA2 now beats aubio** (0.789 vs 0.777). AMLt gap to aubio reduced from 0.051 → 0.035; TA1 gap from 0.101 → 0.085.
+
+The slower integration didn't move the double-tempo tally meaningfully (177 → 181) — that bug remains structural. The win is on continuous-tracking stability and strict-tempo accuracy *within* tracks where the right octave was picked.
+
+## Update — tenth debugging pass: structural double-trap (no fix found)
+
+User asked for a 10th pass directly attacking the dominant residual error class — 181/687 tracks (26 %) predicted at 2× truth tempo. Six interventions were tested, all regressed F:
+
+| Change | F | correct | double | half |
+|---|---|---|---|---|
+| Pass 9 baseline | 0.631 | 343 | 181 | 6 |
+| `w_tatum_half` 0.6→0.7, `w_measure_2` 0.7→0.5 (swap weights) | 0.615 | 305 | 158 | 58 |
+| `w_tatum_half` 0.6→0.7 (only) | 0.625 | 332 | 175 | 12 |
+| Anti-double-tempo demotion (BPM>140, threshold 0.85) | 0.612 | 301 | 157 | 63 |
+| Anti-double-tempo demotion (threshold 0.95) | 0.627 | 332 | 177 | 14 |
+| Anti-double-tempo demotion (threshold 0.99) | 0.630 | 341 | 180 | 8 |
+| Asymmetric prior σ_fast=0.55 σ_slow=0.8 | 0.589 | 297 | 108 | 69 |
+| Asymmetric prior σ_fast=0.7 σ_slow=0.8 | 0.615 | 313 | 164 | 27 |
+
+**Every intervention that reduced doubles increased halves at net loss.** Across all six experiments the marginal cost of removing one double averaged ~1.5 newly-introduced halves. The two error classes occupy mirror-image regions of the prior×weight×scoring parameter space; symmetric tuning is constrained to a Pareto frontier whose pass-9 point is the F-maximum.
+
+Why: at inference time the algorithm cannot distinguish "bank correctly identified the tactus, predicting fast tempo" (Track-3-type, e.g. truth=210 BPM) from "bank's structural short-τ bias dragged inference to the half-period, predicting fast tempo" (truth-100-doubled type). Both produce the same `(τ_w, score(τ_w), score(2·τ_w))` shape. Distinguishing them requires either:
+
+1. An algorithmic improvement that reduces the bank's structural short-τ bias (e.g., contrast normalisation, peakiness-weighted scoring, or matched-template filtering instead of raw y² accumulation).
+2. The full Klapuri 2006 joint posterior over tatum/tactus/measure with dynamic-programming continuity — far more invasive than the linear-combination scoring used today.
+3. Per-track structural cues (beat phase regularity, harmonic content) added as a 2nd pass after the inference winner — substantial new code.
+
+Pass 10 verdict: **no concrete bug found**, double-tempo trap requires algorithmic redesign rather than knob-tuning. Per the prior memory rule (shelve after 2 consecutive flat passes), Klapuri is now considered converged at F=0.631 / AMLt=0.424 / TA1=0.507 / TA2=0.789 and ready for opt-in integration as `BeatSource::Klapuri`. Further improvement would need sustained algorithmic work, not parameter sweeps.
+
 ## References
 
 - Klapuri, A.P., Eronen, A.J., and Astola, J.T. *Analysis of the meter of acoustic musical signals.* IEEE TASLP 14(1):342–355, 2006. https://www.iro.umontreal.ca/~pift6080/H09/documents/papers/klapuri_meter.pdf

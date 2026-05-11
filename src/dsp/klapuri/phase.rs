@@ -16,6 +16,18 @@ use crate::dsp::klapuri::resonators::{default_period_range, ResonatorBank};
 const DEFAULT_INFERENCE_INTERVAL: u64 = 64;
 const DEFAULT_WARMUP_FRAMES: u64 = 256;
 
+/// Pole of the per-band accent-mean tracker. 0.99 at 172 Hz OSS ≈ 0.6 s
+/// time constant — slow enough to leave the tempo periodicities
+/// (typically ≥ 0.25 s) intact, fast enough to track gradual loudness
+/// drift across a track.
+const ACCENT_DC_ALPHA: f32 = 0.99;
+
+/// Window size (in inference cycles) of the τ-median filter. At
+/// `inference_interval = 64` OSS frames and 172 Hz OSS rate, 5 cycles
+/// span ~1.86 s — long enough to suppress isolated octave flips,
+/// short enough to track real tempo changes after ~0.7 s.
+const TAU_HISTORY: usize = 5;
+
 pub struct KlapuriTracker {
     sr: u32,
     hop: usize,
@@ -23,6 +35,26 @@ pub struct KlapuriTracker {
     accent: MultiBandAccent,
     bank: ResonatorBank,
     inference: PeriodInference,
+
+    /// Per-band leaky-integrator running mean of accent, subtracted
+    /// from each accent frame before feeding the bank. Removes the
+    /// positive-mean DC component of HWR-only accent that would
+    /// otherwise bias short-τ resonators after the
+    /// `(1-α)/(1+α)` normalisation in `total_energies`.
+    accent_dc: [f32; N_BANDS],
+
+    /// Ring buffer of the last `TAU_HISTORY` inference winners. The
+    /// median of this buffer is used as `tau_oss` instead of the raw
+    /// per-cycle winner — single-cycle octave flip-flops between τ_t
+    /// and 2τ_t (which break AMLt continuity and push TA1 off the
+    /// strict 4 % tolerance) get rejected; sustained tempo changes
+    /// still propagate after ≥ ⌈N/2⌉ confirming cycles.
+    tau_history: [usize; TAU_HISTORY],
+    /// Number of valid entries in `tau_history` (saturates at the
+    /// buffer length).
+    tau_history_count: usize,
+    /// Write position in `tau_history`.
+    tau_history_pos: usize,
 
     /// Total accent frames consumed since reset.
     oss_frames: u64,
@@ -64,6 +96,10 @@ impl KlapuriTracker {
             next_oss_frame_abs: 0,
             inference_interval: DEFAULT_INFERENCE_INTERVAL,
             warmup_frames: DEFAULT_WARMUP_FRAMES,
+            accent_dc: [0.0; N_BANDS],
+            tau_history: [0; TAU_HISTORY],
+            tau_history_count: 0,
+            tau_history_pos: 0,
         }
     }
 
@@ -93,6 +129,10 @@ impl KlapuriTracker {
         self.tau_oss = 0;
         self.next_beat_abs = None;
         self.next_oss_frame_abs = 0;
+        self.accent_dc = [0.0; N_BANDS];
+        self.tau_history = [0; TAU_HISTORY];
+        self.tau_history_count = 0;
+        self.tau_history_pos = 0;
     }
 
     /// Process one host block of mono audio. `block_start_abs` is the
@@ -167,31 +207,70 @@ impl KlapuriTracker {
             return;
         }
 
-        // A new accent frame is ready (at this audio sample).
-        bank.tick(frame_acc);
+        // A new accent frame is ready (at this audio sample). Subtract
+        // the per-band running mean before feeding the bank — HWR-only
+        // accent has a positive DC component that, after the bank's
+        // (1-α)/(1+α) normalisation, biases short-τ resonators by
+        // ((1+α)/(1-α)), a ≥ 3× factor in our period range.
+        let mut zero_mean = [0.0f32; N_BANDS];
+        for b in 0..N_BANDS {
+            self.accent_dc[b] =
+                ACCENT_DC_ALPHA * self.accent_dc[b] + (1.0 - ACCENT_DC_ALPHA) * frame_acc[b];
+            zero_mean[b] = frame_acc[b] - self.accent_dc[b];
+        }
+        bank.tick(zero_mean);
         *oss_frames += 1;
         // Periodically re-run inference. Period inference sets
-        // `tau_oss`; the next-beat schedule is anchored on FIRST lock
-        // and re-anchored only when τ changes meaningfully (> 10%) or
-        // we're not yet locked. Subsequent emissions advance by
-        // τ·hop without re-anchoring — keeps the beat grid stable
-        // even if inference jitters slightly between runs.
+        // `tau_oss`; the next-beat schedule is re-anchored on EVERY
+        // inference cycle from the current resonator phase (each call
+        // integrates more cross-correlation evidence than the cold
+        // start). Small phase corrections are smoothed by averaging
+        // halfway between the prior prediction and the new one;
+        // half-period jumps snap to the new anchor (octave switch).
         if *oss_frames > warmup_frames && *oss_frames % inference_interval == 0 {
-            if let Some((idx, tau, _bpm)) = inference.select(bank) {
-                let prev_tau = *tau_oss;
+            if let Some((_raw_idx, raw_tau, _raw_bpm)) = inference.select(bank) {
+                // Push the per-cycle winner into the τ-median ring.
+                self.tau_history[self.tau_history_pos] = raw_tau;
+                self.tau_history_pos = (self.tau_history_pos + 1) % TAU_HISTORY;
+                if self.tau_history_count < TAU_HISTORY {
+                    self.tau_history_count += 1;
+                }
+                // Compute median over the valid entries — robust to
+                // single-cycle octave flip-flops.
+                let n = self.tau_history_count;
+                let mut buf = [0usize; TAU_HISTORY];
+                buf[..n].copy_from_slice(&self.tau_history[..n]);
+                buf[..n].sort_unstable();
+                let tau = buf[n / 2];
+                // Look up the bank index of the median τ for the
+                // phase_of read; fall back to the raw winner if for
+                // some reason the median isn't in the bank (cannot
+                // happen — it came from `inference.select` — but be
+                // defensive).
+                let idx = bank.periods().binary_search(&tau).unwrap_or(_raw_idx);
                 *tau_oss = tau;
-                let need_anchor = next_beat_abs.is_none()
-                    || prev_tau == 0
-                    || (tau as i64 - prev_tau as i64).unsigned_abs() as usize * 10 > prev_tau;
-                if need_anchor {
-                    let phase = bank.phase_of(idx);
-                    let phase_audio_off = (phase as u64).saturating_mul(hop as u64);
-                    let last_beat_audio = abs_at_sample.saturating_sub(phase_audio_off);
-                    let period_audio = (tau as u64) * (hop as u64);
-                    let mut nb = last_beat_audio + period_audio;
-                    while nb <= abs_at_sample {
-                        nb += period_audio;
+                let phase = bank.phase_of(idx);
+                let phase_audio_off = (phase as u64).saturating_mul(hop as u64);
+                let last_beat_audio = abs_at_sample.saturating_sub(phase_audio_off);
+                let period_audio = (tau as u64) * (hop as u64);
+                let mut nb = last_beat_audio + period_audio;
+                while nb <= abs_at_sample {
+                    nb += period_audio;
+                }
+                if let Some(prev_nb) = *next_beat_abs {
+                    let prev_i = prev_nb as i64;
+                    let new_i = nb as i64;
+                    let diff_abs = (prev_i - new_i).unsigned_abs();
+                    if diff_abs > (period_audio / 2) {
+                        // Big jump (octave switch) — accept new anchor.
+                        *next_beat_abs = Some(nb);
+                    } else {
+                        // Small adjustment — nudge halfway to avoid
+                        // sudden phase jumps on stable tracks.
+                        let midpoint = ((prev_i + new_i) / 2) as u64;
+                        *next_beat_abs = Some(midpoint);
                     }
+                } else {
                     *next_beat_abs = Some(nb);
                 }
             }

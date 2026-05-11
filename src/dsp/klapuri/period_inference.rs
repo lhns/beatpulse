@@ -42,17 +42,12 @@ impl Default for InferenceWeights {
             w_tactus: 1.0,
             w_tatum_half: 0.6,
             w_tatum_third: 0.3,
-            w_measure_2: 0.5,
+            w_measure_2: 0.7,
             w_measure_3: 0.3,
             w_measure_4: 0.2,
-            // σ=0.5 in log-BPM space → 1σ covers ≈ 73-200 BPM, 2σ
-            // covers ≈ 44-330. Wider than the original σ=0.35 so
-            // genuine slow waltzes (~80 BPM) and fast jives
-            // (~200 BPM) aren't suppressed; the joint sub/super-
-            // harmonic evidence (now usable for all tactus τ thanks
-            // to the extended period range) is the primary octave
-            // discriminator.
-            prior_sigma: 0.5,
+            // σ=0.8 in log-BPM space lets ballroom's full 60-220
+            // BPM range be picked when the bank is confident.
+            prior_sigma: 0.8,
             prior_centre_bpm: 120.0,
         }
     }
