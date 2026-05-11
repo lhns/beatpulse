@@ -197,16 +197,34 @@ impl ResonatorBank {
         best_j
     }
 
-    /// Per-period energy summed across the 4 channels. Returns a slice
-    /// indexed by `periods()`. Borrows internal scratch — no
-    /// allocation.
+    /// Per-period energy summed across the 4 channels, normalised for
+    /// the per-τ integration-gain bias. Returns a slice indexed by
+    /// `periods()`. Borrows internal scratch — no allocation.
+    ///
+    /// **Normalisation rationale:** for a comb filter `y[n] =
+    /// α·y[n-τ] + (1-α)·x[n]` driven by unit-power white noise, the
+    /// steady-state response is `E[y²] = (1-α) / (1+α)`. Short τ has
+    /// smaller α (since `alpha = 0.5^(1/(2τ))`), so `(1-α)/(1+α)` is
+    /// larger — short-τ resonators accumulate ~3.5× more energy on
+    /// broadband input than long-τ ones for the same input statistics.
+    /// On real audio (vs synthetic impulse trains) this bias completely
+    /// dominates the resonator bank: every track's top energies pile
+    /// up at the shortest periods regardless of true tempo.
+    ///
+    /// We divide each resonator's energy by its per-τ baseline so
+    /// resonators are comparable across τ — the comparison is then
+    /// "does the resonator at τ have *anomalously* high energy
+    /// relative to its baseline?", which is the right question for
+    /// period inference.
     pub fn total_energies(&mut self) -> &[f32] {
         for (i, e) in self.energy_buf.iter_mut().enumerate() {
             let mut sum = 0.0f32;
             for chan in &self.resonators {
                 sum += chan[i].energy;
             }
-            *e = sum;
+            let a = self.resonators[0][i].alpha;
+            let gain = (1.0 - a) / (1.0 + a);
+            *e = if gain > 1e-9 { sum / gain } else { 0.0 };
         }
         &self.energy_buf
     }

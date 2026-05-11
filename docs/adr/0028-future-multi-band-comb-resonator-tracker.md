@@ -81,6 +81,32 @@ F crept up by +0.041 — but TA2 actually got *worse* (0.045 → 0.031). The fix
 
 **Per the debugging plan's Phase C gate (F < 0.45 → stop), this stays Rejected.** ADR-0028 status remains Rejected; the implementation is preserved for any future revival, with the new measurement and the diagnostic notes above.
 
+## Update — third debugging pass: per-τ integration-gain normalisation
+
+A diagnostic harness (`tests/klapuri_diagnose.rs`) instrumented the accent + bank + inference pipeline and ran on 5 representative Ballroom tracks. Findings:
+
+- DC-bin contribution to low-band power: **0.0 %** — DC contamination was *not* the bug.
+- Per-band accent magnitudes: roughly balanced (max/min ~1.5×). Per-band imbalance was *not* the bug.
+- **Top-5 raw resonator energies on every single track: τ=23, 24, 25, 26, 27** (the shortest periods in the bank) regardless of true tempo.
+- **Inference winner on every single track: τ=69 (149.8 BPM)** regardless of true tempo (125, 171, 210, 133, 98).
+
+The structural bug: for a comb filter `y[n] = α·y[n-τ] + (1-α)·x[n]` driven by broadband noise, the steady-state response is `E[y²] = (1-α)/(1+α)`. Short τ has smaller α (since `α = 0.5^(1/(2τ))`), so `(1-α)/(1+α)` is **larger** — short-τ resonators accumulate ~3.5× more energy on real broadband audio than long-τ ones for the same input statistics. On synthetic impulse trains the bank only fires resonators whose τ divides the impulse rate; on real continuous accent every resonator gets excited, and the short-τ ones dominate. The sub-harmonic inference then over-counts these inflated values as evidence for whatever tactus happens to have τ/2 or τ/3 near 23-27. Result: every track converges to the same locally-optimal tactus.
+
+Fix landed in `src/dsp/klapuri/resonators.rs::total_energies`: divide each resonator's energy by `(1-α)/(1+α)` so resonators are comparable across τ. The comparison becomes "does this resonator have *anomalously* high energy relative to its baseline?", which is the right question for period inference.
+
+Re-measured on Ballroom (n=687, same scoring):
+
+| Pass | F | AMLt | TA1 | TA2 |
+|---|---|---|---|---|
+| Pre-debugging | 0.277 | 0.080 | 0.044 | 0.045 |
+| Second pass (cross-corr + range + prior) | 0.318 | 0.043 | 0.017 | 0.031 |
+| **Third pass (+ gain normalisation)** | **0.330** | 0.070 | 0.066 | 0.080 |
+| AubioTempo (reference) | 0.590 | 0.459 | 0.592 | 0.777 |
+
+TA1 (strict tempo) **quadrupled** (1.7 % → 6.6 %), TA2 **nearly tripled** (3.1 % → 8.0 %) — TA2 is now *above* the random-period chance level for the first time. F barely moved (+0.012) because correct tempo selection on a fraction of tracks doesn't help F when the phase is still drifting or the period is still wrong on most tracks. The bug-fix moved the algorithm from "uniformly wrong" toward "sometimes right", but the residual gap to AubioTempo's 0.59 / 0.78 is structural — the algorithm correctly selects the tempo on only ~8 % of tracks, vs aubio's ~78 %.
+
+**Per the plan's Phase F gate (F < 0.45 → stop), this stays Rejected.** Three debugging passes, three real bugs fixed, but the algorithm still substantially underperforms aubio on Ballroom. Klapuri-from-paper appears to need significantly more work than a single implementation pass — either more bugs we haven't found, a structurally different accent pipeline, or the missing measure-level joint inference. The implementation in `src/dsp/klapuri/` (now with the per-τ normalisation fix) is preserved for any future fourth attempt; 19 component unit tests + the `klapuri_diagnose.rs` harness make further diagnosis straightforward.
+
 **What would be needed to make Klapuri work for us:**
 
 - Per-genre / per-track sub-harmonic weight calibration (the over-extended range needs a per-τ weight that decays for very short τ, instead of a flat `w_tatum_half`).
