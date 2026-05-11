@@ -3,6 +3,7 @@
 
 //! DSP modules. See `BeatPulse-SPEC.md` §5.
 
+pub mod aubio_tempo_tracker;
 pub mod beat_pll;
 pub mod beat_tracker;
 pub mod consensus_tracker;

@@ -33,3 +33,4 @@ a new ADR; existing ADRs are not edited except to mark them Superseded.
 | 0024 | [Tempo stability is its own parameter, decoupled from Sensitivity](0024-tempo-stability-separate-param.md) | Accepted          |
 | 0025 | [Pulse firing requires monotonic forward progress](0025-pulse-firing-monotonic.md) | Accepted          |
 | 0026 | [Lookahead-consensus tracker as opt-in alternative to per-onset PLL feedback](0026-lookahead-consensus-tracker.md) | Accepted          |
+| 0027 | [Aubio `Tempo` as the default tracking mode](0027-aubio-tempo-tracking-mode.md) | Accepted          |

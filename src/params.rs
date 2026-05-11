@@ -74,16 +74,27 @@ pub enum CcValueMode {
     Toggle127_0,
 }
 
-/// Tracking mode — selects how detected onsets feed the PLL. See ADR-0026.
+/// Tracking mode — selects how the audio feeds the PLL. See ADR-0026
+/// (Lookahead Consensus) and ADR-0027 (Aubio Tempo).
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum TrackingMode {
-    /// Per-onset PLL feedback. Low latency, jittery on dense input.
-    /// Best for clean kick / drum-bus sources.
+    /// Aubio's `Tempo` object (autocorrelation-based beat tracker).
+    /// Default since 2026-05-11 — F=0.58 / TA2=0.76 on Ballroom vs
+    /// 0.29 / 0.29 for Reactive on the same corpus. Same per-block
+    /// latency as Reactive (single hop ≈ 11.6 ms at 44.1 kHz). See
+    /// ADR-0027.
+    #[name = "Aubio Tempo"]
+    AubioTempo,
+    /// Per-onset PLL feedback against `aubio::Onset` events. Lowest
+    /// latency, but reactive period smoothing locks onto the wrong
+    /// tempo on most full-mix material (F=0.29 on Ballroom).
+    /// Retained as a baseline / for very clean drum-bus sources.
     #[name = "Reactive"]
     Reactive,
     /// Buffer onsets over a window, derive consensus period from
     /// median IOI, snap PLL periodically. Higher latency (= the
-    /// configured Lookahead window), more stable on full-mix audio.
+    /// configured Lookahead window), F=0.44 on Ballroom. Useful when
+    /// `AubioTempo` mistracks a particular full-mix source.
     #[name = "Lookahead Consensus"]
     LookaheadConsensus,
 }
@@ -198,7 +209,7 @@ impl Default for BeatpulseParams {
             .with_unit(" ms")
             .with_step_size(1.0),
 
-            tracking_mode: EnumParam::new("Tracking Mode", TrackingMode::Reactive),
+            tracking_mode: EnumParam::new("Tracking Mode", TrackingMode::AubioTempo),
 
             lookahead_ms: FloatParam::new(
                 "Lookahead",
@@ -315,7 +326,7 @@ mod tests {
         assert_eq!(p.sensitivity.value(), 0.5);
         assert_eq!(p.tempo_stability.value(), 0.5);
         assert_eq!(p.latency_offset_ms.value(), 0.0);
-        assert_eq!(p.tracking_mode.value(), TrackingMode::Reactive);
+        assert_eq!(p.tracking_mode.value(), TrackingMode::AubioTempo);
         assert_eq!(p.lookahead_ms.value(), 2000.0);
         assert_eq!(p.onset_method.value(), OnsetMethod::SpecFlux);
         assert_eq!(p.silence_threshold.value(), -50.0);

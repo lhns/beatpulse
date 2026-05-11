@@ -94,6 +94,17 @@ Last refreshed against `main` after commit `f6b212c`-area work.
 | Tunables driven by `sensitivity` parameter                  | ⚠      | `α_phase` from sensitivity; `α_period` decoupled to `tempo_stability` (ADR-0024). |
 | `current_bpm()`                                             | ✅      |                                                |
 
+### §5.2a AubioTempoTracker (default since 2026-05-11)
+
+| Item                                                                | Status | Notes                                          |
+|---------------------------------------------------------------------|--------|------------------------------------------------|
+| Wraps `aubio_rs::Tempo` (autocorrelation-based)                     | ✅      | `src/dsp/aubio_tempo_tracker.rs`.              |
+| Snaps `BeatPll::period_samples` from inter-beat interval            | ✅      | Octave-corrected into [60, 220] BPM.            |
+| Snaps `phase_samples` from beat sample (no smoothing)               | ✅      | Single source of truth: `snap_pll_at_beat`.     |
+| Default `tracking_mode` = `AubioTempo`                              | ✅      | See ADR-0027.                                   |
+| Reset on silence-end / manual resync                                | ✅      |                                                |
+| Same per-block latency as Reactive (one aubio hop ≈ 11.6 ms)        | ✅      | No 2 s lookahead penalty (vs Consensus).        |
+
 ### §5.2b ConsensusTracker (opt-in alternative)
 
 | Item                                                                | Status | Notes                                          |
@@ -119,30 +130,28 @@ Last refreshed against `main` after commit `f6b212c`-area work.
 **Real-audio evaluation** (gated on `--features dataset-tests`, run
 locally after fetching datasets — not part of CI):
 
-- **Ballroom** (`ballroom_compare`, n=698, measured 2026-05-11 after
-  test-harness fix): reactive F=0.288, consensus F=0.436,
-  **ΔF = +0.148**. Consensus better on **572/698 tracks (82 %)**,
-  reactive better on 114, tied on 12. TA2 0.285 → 0.428 (+14 pp).
-  *Note*: the original 2026-05-10 run reported ΔF=+0.190 with reactive
-  F=0.346, but that was inflated by a `run_pipeline` wrap-detection
-  bug (false-positive beats from per-onset phase corrections). After
-  switching the test harness to the production `PulseGenerator` code
-  path, the corrected delta is +0.148 — qualitatively the same
-  conclusion (consensus wins on most full-mix tracks), magnitude
-  smaller.
-- *Open*: both modes' absolute F-measure on Ballroom (≈ 0.29 / 0.44)
-  trails the literature's ~0.75-0.85 figure for aubio + PLL trackers.
-  Brief audit (`onset_method_audit.rs`, Jive subset n=60) found all
-  7 aubio onset methods cluster at F=0.36-0.45 — the gap is
-  structural (PLL tuning, annotation alignment, mono downmix?), not a
-  one-flip parameter fix. Tracking as a follow-up; the user-facing
-  takeaway is Consensus > Reactive on full-mix material, not "we hit
-  the literature SOTA".
-- GiantSteps Tempo (`giantsteps_compare`): not measurable as of
-  2026-05-10 — both upstream audio mirrors (JKU + Beatport CDN) are
-  dead. Harness ready if audio resurfaces.
-- SMC_MIREX (`smc_compare`): not measured — INESC mirror unreachable
-  (`ECONNREFUSED`); manual fallback documented in TESTING.md.
+- **Ballroom 3-way A/B** (`ballroom_compare`, n=698, measured
+  2026-05-11). **AubioTempo (new default, ADR-0027)** F=**0.547**,
+  TA2=**0.744** — in literature range. Consensus F=0.436, TA2=0.428.
+  Reactive F=0.288, TA2=0.285. ΔF(aubio−reactive)=+0.259;
+  ΔF(aubio−consensus)=+0.111. AubioTempo wins outright on **387/698
+  tracks (55 %)**.
+- *Diagnostic* (`tests/ballroom_diagnostic.rs`): on the prior default
+  (Reactive), 71 % of tracks were locked to wrong tempos (not octave-
+  related), median phase offset +11.3 ms (≈ one aubio hop, within
+  ±70 ms tolerance). Threshold sweep on the full corpus
+  (`tests/threshold_sweep.rs`) confirmed onset density isn't the
+  issue — F=0.28–0.32 across all thresholds for SpecFlux/KL/HFC.
+  Hence the move to aubio's `Tempo` object (autocorrelation-based
+  period selection) for the default mode.
+- *Remaining gap*: aubio Tempo standalone scores F=0.576 on Ballroom
+  (`tests/aubio_tempo_experiment.rs`); the integrated AubioTempo
+  scores 0.547 — ~0.03 lower because `PulseGenerator`'s wrap-detection
+  adds a small timing wobble. Tracked as a follow-up if the gap
+  matters. Closing to literature SOTA (~0.75–0.85) likely requires a
+  neural beat tracker (M5) or source separation upstream.
+- GiantSteps Tempo: not measurable (both upstream mirrors dead 2026-05).
+- SMC_MIREX: not measured (INESC mirror down).
 
 σ of reported BPM is *not* a useful proxy here: reactive has low σ even
 when locked on the wrong tempo (smooth drift); consensus has high σ

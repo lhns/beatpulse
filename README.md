@@ -36,16 +36,18 @@ See [`BeatPulse-SPEC.md`](BeatPulse-SPEC.md) for the design and
 - **Decoupled controls.** Sensitivity (aubio threshold + phase-lock
   rate) and Stability (period smoothing) are separate knobs — no
   fighting between "detect more onsets" and "less BPM jitter".
-- **Two tracking modes.** *Reactive* (default) feeds every onset to the
-  PLL — low latency, best for clean kick / drum-bus sources.
-  *Lookahead Consensus* buffers onsets over a configurable window
-  (200–3000 ms, default 2000), takes the median IOI, and snaps the PLL
-  once two consecutive consensus windows agree — steadier BPM on noisy
-  full-mix input, at the cost of `lookahead` of latency. Compensate
-  via the existing Latency offset slider (rule of thumb:
-  `≈ -lookahead/2`). On the Ballroom dataset (698 real recordings),
-  consensus mode improves F-measure from 0.29 to 0.44 (+0.15) and wins
-  on 82 % of tracks. See ADR-0026.
+- **Three tracking modes.** *Aubio Tempo* (default since 2026-05-11) —
+  aubio's autocorrelation-based beat tracker; F=0.55 / TA2=0.74 on
+  Ballroom (n=698), in literature range. Same per-block latency as
+  Reactive (~11 ms at 44.1 kHz). *Reactive* — per-onset PLL feedback;
+  lowest latency but locks to wrong tempos on most full-mix material
+  (F=0.29). Useful as a baseline for very clean drum-bus sources.
+  *Lookahead Consensus* — buffers onsets over a configurable window
+  (200–3000 ms, default 2000), median IOI for period selection
+  (F=0.44); steadier BPM on noisy input but adds the configured
+  lookahead of latency, compensable via the Latency offset slider
+  (`≈ −lookahead/2`). See ADR-0026 (Consensus) and ADR-0027 (Aubio
+  Tempo).
 - **Latency calibration.** Per-instance `Latency offset` slider
   (±200 ms) so DMX cues align with the perceived audio after host
   buffer + driver + speaker delay.

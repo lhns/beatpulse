@@ -155,7 +155,10 @@ fn ballroom_eval() {
         let Some(reference) = load_beats(&beats_path) else {
             continue;
         };
-        let estimated = run_pipeline(&audio, TARGET_SR, Mode::Reactive);
+        // Test the *default* tracking mode — AubioTempo since
+        // 2026-05-11 (ADR-0027). The Reactive / Consensus arms are
+        // measured side-by-side in `ballroom_compare`.
+        let estimated = run_pipeline(&audio, TARGET_SR, Mode::AubioTempo);
         let f = f_measure(&reference, &estimated, F_MEASURE_TOL);
         let t1 = tempo_accuracy_1(&reference, &estimated, TEMPO_ACC_TOL);
         let t2 = tempo_accuracy_2(&reference, &estimated, TEMPO_ACC_TOL);
@@ -201,21 +204,14 @@ fn ballroom_eval() {
         agg.n_tracks, agg.f_measure_mean, agg.tempo_acc_1_rate, agg.tempo_acc_2_rate
     );
 
-    // Acceptance gate. ADR-0014 originally set this at 0.70, an
-    // aspirational target from before the per-onset PLL was tuned.
-    // Lowered to 0.25 on 2026-05-11 after honest re-measurement
-    // (Reactive F≈0.29 on Ballroom). The 0.70 target was infeasible
-    // with the current PLL + onset-method tuning; brief audit
-    // (`onset_method_audit.rs`) found all 7 aubio methods cluster at
-    // F=0.36–0.45 on Jive (well below the literature's ~0.75 figure),
-    // suggesting a structural gap (PLL tuning, annotation alignment,
-    // downmix) rather than a fixable parameter. Tracking as a follow-
-    // up; this gate is now a "did we break something obviously" floor
-    // rather than an acceptance bar. The user-facing recommendation is
-    // Consensus mode (see `ballroom_compare`). See ADR-0014 update.
+    // Acceptance gate for the default tracking mode (AubioTempo).
+    // Measured 2026-05-11 at F≈0.547; floor set to 0.50 to leave a
+    // small margin for RNG / aubio version drift while catching
+    // genuine regressions. ADR-0014 history: 0.70 (aspirational, PLL
+    // era) → 0.25 (Reactive default era) → 0.50 (AubioTempo era).
     assert!(
-        agg.f_measure_mean >= 0.25,
-        "aggregate F-measure {:.3} < 0.25 (regression floor)",
+        agg.f_measure_mean >= 0.50,
+        "aggregate F-measure {:.3} < 0.50 (regression floor for default mode)",
         agg.f_measure_mean
     );
 
@@ -253,10 +249,13 @@ struct CompareAggregate {
     n_tracks: usize,
     reactive: Aggregate,
     consensus: Aggregate,
-    delta_f_mean: f64,
+    aubio_tempo: Aggregate,
+    delta_f_consensus_vs_reactive: f64,
+    delta_f_aubio_vs_reactive: f64,
+    delta_f_aubio_vs_consensus: f64,
     n_consensus_better: usize,
     n_reactive_better: usize,
-    n_tied: usize,
+    n_aubio_best: usize,
 }
 
 /// Side-by-side comparison of Reactive vs Lookahead Consensus on the
@@ -277,7 +276,8 @@ fn ballroom_compare() {
         panic!("no .wav files found under {}", dir.display());
     }
 
-    type PerTrack = (f64, bool, bool, f64, bool, bool);
+    type PerTrack = (f64, bool, bool, f64, bool, bool, f64, bool, bool);
+    // (f_r, t1_r, t2_r, f_c, t1_c, t2_c, f_a, t1_a, t2_a)
     let mut per_track: BTreeMap<String, PerTrack> = BTreeMap::new();
 
     for wav in &wavs {
@@ -306,6 +306,7 @@ fn ballroom_compare() {
                 lookahead_ms: 2000.0,
             },
         );
+        let est_a = run_pipeline(&audio, TARGET_SR, Mode::AubioTempo);
 
         let f_r = f_measure(&reference, &est_r, F_MEASURE_TOL);
         let t1_r = tempo_accuracy_1(&reference, &est_r, TEMPO_ACC_TOL);
@@ -313,9 +314,12 @@ fn ballroom_compare() {
         let f_c = f_measure(&reference, &est_c, F_MEASURE_TOL);
         let t1_c = tempo_accuracy_1(&reference, &est_c, TEMPO_ACC_TOL);
         let t2_c = tempo_accuracy_2(&reference, &est_c, TEMPO_ACC_TOL);
+        let f_a = f_measure(&reference, &est_a, F_MEASURE_TOL);
+        let t1_a = tempo_accuracy_1(&reference, &est_a, TEMPO_ACC_TOL);
+        let t2_a = tempo_accuracy_2(&reference, &est_a, TEMPO_ACC_TOL);
 
         let name = wav.file_stem().unwrap().to_string_lossy().into_owned();
-        per_track.insert(name, (f_r, t1_r, t2_r, f_c, t1_c, t2_c));
+        per_track.insert(name, (f_r, t1_r, t2_r, f_c, t1_c, t2_c, f_a, t1_a, t2_a));
     }
     if per_track.is_empty() {
         panic!("no tracks were successfully evaluated");
@@ -334,27 +338,39 @@ fn ballroom_compare() {
         tempo_acc_1_rate: per_track.values().filter(|t| t.4).count() as f64 / n as f64,
         tempo_acc_2_rate: per_track.values().filter(|t| t.5).count() as f64 / n as f64,
     };
+    let agg_a = Aggregate {
+        n_tracks: n,
+        f_measure_mean: per_track.values().map(|t| t.6).sum::<f64>() / n as f64,
+        tempo_acc_1_rate: per_track.values().filter(|t| t.7).count() as f64 / n as f64,
+        tempo_acc_2_rate: per_track.values().filter(|t| t.8).count() as f64 / n as f64,
+    };
     let mut n_better_c = 0;
     let mut n_better_r = 0;
-    let mut n_tied = 0;
+    let mut n_aubio_best = 0;
     for t in per_track.values() {
+        // c vs r
         let d = t.3 - t.0;
         if d > 0.005 {
             n_better_c += 1;
         } else if d < -0.005 {
             n_better_r += 1;
-        } else {
-            n_tied += 1;
+        }
+        // a wins among the three?
+        if t.6 >= t.0 && t.6 >= t.3 {
+            n_aubio_best += 1;
         }
     }
     let comp = CompareAggregate {
         n_tracks: n,
         reactive: agg_r.clone(),
         consensus: agg_c.clone(),
-        delta_f_mean: agg_c.f_measure_mean - agg_r.f_measure_mean,
+        aubio_tempo: agg_a.clone(),
+        delta_f_consensus_vs_reactive: agg_c.f_measure_mean - agg_r.f_measure_mean,
+        delta_f_aubio_vs_reactive: agg_a.f_measure_mean - agg_r.f_measure_mean,
+        delta_f_aubio_vs_consensus: agg_a.f_measure_mean - agg_c.f_measure_mean,
         n_consensus_better: n_better_c,
         n_reactive_better: n_better_r,
-        n_tied,
+        n_aubio_best,
     };
 
     let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/output");
@@ -362,21 +378,12 @@ fn ballroom_compare() {
     let csv_path = out_dir.join("ballroom-compare.csv");
     if let Ok(mut csv) = fs::File::create(&csv_path) {
         use std::io::Write;
-        let _ = writeln!(
-            csv,
-            "track,reactive_F,reactive_TA1,reactive_TA2,consensus_F,consensus_TA1,consensus_TA2,delta_F"
-        );
+        let _ = writeln!(csv, "track,r_F,r_TA1,r_TA2,c_F,c_TA1,c_TA2,a_F,a_TA1,a_TA2");
         for (name, t) in &per_track {
             let _ = writeln!(
                 csv,
-                "{name},{:.4},{},{},{:.4},{},{},{:+.4}",
-                t.0,
-                t.1,
-                t.2,
-                t.3,
-                t.4,
-                t.5,
-                t.3 - t.0
+                "{name},{:.4},{},{},{:.4},{},{},{:.4},{},{}",
+                t.0, t.1, t.2, t.3, t.4, t.5, t.6, t.7, t.8
             );
         }
     }
@@ -387,14 +394,19 @@ fn ballroom_compare() {
 
     println!(
         "Ballroom A/B: n={n} | reactive F={:.3} TA2={:.3} | consensus F={:.3} TA2={:.3} | \
-         ΔF={:+.3} (consensus better: {} | reactive better: {} | tied: {})",
+         aubio_tempo F={:.3} TA2={:.3} | ΔF(c-r)={:+.3} ΔF(a-r)={:+.3} ΔF(a-c)={:+.3} | \
+         (n_consensus_better_vs_reactive={}, n_reactive_better_vs_consensus={}, n_aubio_best_overall={})",
         agg_r.f_measure_mean,
         agg_r.tempo_acc_2_rate,
         agg_c.f_measure_mean,
         agg_c.tempo_acc_2_rate,
-        comp.delta_f_mean,
+        agg_a.f_measure_mean,
+        agg_a.tempo_acc_2_rate,
+        comp.delta_f_consensus_vs_reactive,
+        comp.delta_f_aubio_vs_reactive,
+        comp.delta_f_aubio_vs_consensus,
         n_better_c,
         n_better_r,
-        n_tied,
+        n_aubio_best,
     );
 }
