@@ -21,13 +21,11 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use beatpulse::eval::{
-    amlt, f_measure, tempo_accuracy_1, tempo_accuracy_2, trim_beats, F_MEASURE_TOL, TEMPO_ACC_TOL,
-};
+use beatpulse::eval::Scoring;
 use serde::{Deserialize, Serialize};
 
 mod common;
-use common::datasets::{is_ballroom_duplicate, TRIM_BEATS_MIN_T};
+use common::datasets::is_ballroom_duplicate;
 use common::{run_pipeline, Mode};
 
 const TARGET_SR: u32 = 44_100;
@@ -165,14 +163,8 @@ fn ballroom_eval() {
         // 2026-05-11 (ADR-0027). The Reactive / Consensus arms are
         // measured side-by-side in `ballroom_compare`.
         let estimated = run_pipeline(&audio, TARGET_SR, Mode::AubioTempo);
-        // Apply mir_eval-standard trim before scoring (skip first 5 s).
-        let r_t = trim_beats(&reference, TRIM_BEATS_MIN_T);
-        let e_t = trim_beats(&estimated, TRIM_BEATS_MIN_T);
-        let f = f_measure(&r_t, &e_t, F_MEASURE_TOL);
-        let a = amlt(&r_t, &e_t);
-        let t1 = tempo_accuracy_1(&r_t, &e_t, TEMPO_ACC_TOL);
-        let t2 = tempo_accuracy_2(&r_t, &e_t, TEMPO_ACC_TOL);
-        per_track.insert(stem, (f, a, t1, t2));
+        let s = Scoring::standard(&reference, &estimated);
+        per_track.insert(stem, (s.f_measure, s.amlt, s.tempo_acc_1, s.tempo_acc_2));
     }
 
     if per_track.is_empty() {
@@ -324,14 +316,9 @@ fn ballroom_compare() {
         );
         let est_a = run_pipeline(&audio, TARGET_SR, Mode::AubioTempo);
 
-        let r_t = trim_beats(&reference, TRIM_BEATS_MIN_T);
         let score = |est: &[f64]| -> ModeRow {
-            let e_t = trim_beats(est, TRIM_BEATS_MIN_T);
-            let f = f_measure(&r_t, &e_t, F_MEASURE_TOL);
-            let a = amlt(&r_t, &e_t);
-            let t1 = tempo_accuracy_1(&r_t, &e_t, TEMPO_ACC_TOL);
-            let t2 = tempo_accuracy_2(&r_t, &e_t, TEMPO_ACC_TOL);
-            (f, a, t1, t2)
+            let s = Scoring::standard(&reference, est);
+            (s.f_measure, s.amlt, s.tempo_acc_1, s.tempo_acc_2)
         };
         let row_r = score(&est_r);
         let row_c = score(&est_c);

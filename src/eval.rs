@@ -218,6 +218,61 @@ pub fn amlt(reference: &[f64], estimate: &[f64]) -> f64 {
     continuity(reference, estimate).1
 }
 
+/// Bundle of beat-tracking metrics for a single track.
+///
+/// Computed by [`Scoring::compute`] (which applies `trim_beats` to
+/// both inputs first), so dataset tests don't have to repeat the
+/// `trim` / `f_measure` / `amlt` / `tempo_accuracy_*` calls.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Scoring {
+    pub f_measure: f64,
+    pub amlt: f64,
+    pub tempo_acc_1: bool,
+    pub tempo_acc_2: bool,
+    pub n_reference: usize,
+    pub n_estimate: usize,
+}
+
+impl Scoring {
+    /// Score one track. `min_t` is the `mir_eval`-style warm-up cut
+    /// (use `0.0` to skip). `f_tol` is the F-measure tolerance in
+    /// seconds; `tempo_tol_pct` is the tempo-accuracy tolerance as a
+    /// fraction (e.g. `0.04` for ±4%).
+    pub fn compute(
+        reference: &[f64],
+        estimate: &[f64],
+        min_t: f64,
+        f_tol: f64,
+        tempo_tol_pct: f64,
+    ) -> Self {
+        let r = if min_t > 0.0 {
+            trim_beats(reference, min_t)
+        } else {
+            reference.to_vec()
+        };
+        let e = if min_t > 0.0 {
+            trim_beats(estimate, min_t)
+        } else {
+            estimate.to_vec()
+        };
+        Self {
+            f_measure: f_measure(&r, &e, f_tol),
+            amlt: amlt(&r, &e),
+            tempo_acc_1: tempo_accuracy_1(&r, &e, tempo_tol_pct),
+            tempo_acc_2: tempo_accuracy_2(&r, &e, tempo_tol_pct),
+            n_reference: r.len(),
+            n_estimate: e.len(),
+        }
+    }
+
+    /// Convenience for `compute(reference, estimate, 5.0,
+    /// F_MEASURE_TOL, TEMPO_ACC_TOL)` — the standard `mir_eval` defaults
+    /// every dataset test uses.
+    pub fn standard(reference: &[f64], estimate: &[f64]) -> Self {
+        Self::compute(reference, estimate, 5.0, F_MEASURE_TOL, TEMPO_ACC_TOL)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,5 +389,24 @@ mod tests {
         let e = beats_at(240.0, 60, 0.5);
         let (_, expected) = continuity(&r, &e);
         assert_relative_eq!(amlt(&r, &e), expected, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn scoring_standard_perfect_match_post_trim() {
+        let r = beats_at(120.0, 30, 0.5);
+        let s = Scoring::standard(&r, &r);
+        assert_relative_eq!(s.f_measure, 1.0, epsilon = 1e-9);
+        assert_relative_eq!(s.amlt, 1.0, epsilon = 1e-6);
+        assert!(s.tempo_acc_1);
+        assert!(s.tempo_acc_2);
+        // 5s trim drops first ~10 beats at 120 BPM.
+        assert!(s.n_reference < r.len());
+    }
+
+    #[test]
+    fn scoring_compute_with_zero_trim_skips_trim() {
+        let r = beats_at(120.0, 5, 0.5);
+        let s = Scoring::compute(&r, &r, 0.0, F_MEASURE_TOL, TEMPO_ACC_TOL);
+        assert_eq!(s.n_reference, r.len());
     }
 }

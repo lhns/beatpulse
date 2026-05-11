@@ -6,6 +6,7 @@
 pub mod aubio_pulse_emitter;
 pub mod aubio_tempo_tracker;
 pub mod beat_pll;
+pub mod beat_source;
 pub mod beat_tracker;
 pub mod consensus_tracker;
 pub mod pulse_generator;

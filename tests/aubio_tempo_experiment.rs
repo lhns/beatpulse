@@ -20,13 +20,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use aubio_rs::{OnsetMode, Tempo};
-use beatpulse::eval::{
-    amlt, f_measure, tempo_accuracy_2, trim_beats, F_MEASURE_TOL, TEMPO_ACC_TOL,
-};
+use beatpulse::eval::Scoring;
 
 mod common;
 use common::audio::decode_mono_44k1;
-use common::datasets::{is_ballroom_duplicate, TRIM_BEATS_MIN_T};
+use common::datasets::is_ballroom_duplicate;
 
 const TARGET_SR: u32 = 44_100;
 const BUF_SIZE: usize = 1024;
@@ -129,11 +127,10 @@ fn aubio_tempo_ballroom() {
         let mut ta2 = 0usize;
         for (audio, truth) in &bench {
             let est = run_tempo(audio, *method);
-            let r_t = trim_beats(truth, TRIM_BEATS_MIN_T);
-            let e_t = trim_beats(&est, TRIM_BEATS_MIN_T);
-            sum_f += f_measure(&r_t, &e_t, F_MEASURE_TOL);
-            sum_a += amlt(&r_t, &e_t);
-            if tempo_accuracy_2(&r_t, &e_t, TEMPO_ACC_TOL) {
+            let s = Scoring::standard(truth, &est);
+            sum_f += s.f_measure;
+            sum_a += s.amlt;
+            if s.tempo_acc_2 {
                 ta2 += 1;
             }
         }

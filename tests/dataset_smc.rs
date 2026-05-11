@@ -21,9 +21,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use beatpulse::eval::{
-    f_measure, tempo_accuracy_1, tempo_accuracy_2, F_MEASURE_TOL, TEMPO_ACC_TOL,
-};
+use beatpulse::eval::Scoring;
 use serde::{Deserialize, Serialize};
 
 mod common;
@@ -93,12 +91,10 @@ fn smc_compare() {
             },
         );
 
-        let f_r = f_measure(&reference, &est_r, F_MEASURE_TOL);
-        let t1_r = tempo_accuracy_1(&reference, &est_r, TEMPO_ACC_TOL);
-        let t2_r = tempo_accuracy_2(&reference, &est_r, TEMPO_ACC_TOL);
-        let f_c = f_measure(&reference, &est_c, F_MEASURE_TOL);
-        let t1_c = tempo_accuracy_1(&reference, &est_c, TEMPO_ACC_TOL);
-        let t2_c = tempo_accuracy_2(&reference, &est_c, TEMPO_ACC_TOL);
+        let s_r = Scoring::standard(&reference, &est_r);
+        let s_c = Scoring::standard(&reference, &est_c);
+        let (f_r, t1_r, t2_r) = (s_r.f_measure, s_r.tempo_acc_1, s_r.tempo_acc_2);
+        let (f_c, t1_c, t2_c) = (s_c.f_measure, s_c.tempo_acc_1, s_c.tempo_acc_2);
 
         let name = wav.file_stem().unwrap().to_string_lossy().into_owned();
         per_track.insert(name, (f_r, t1_r, t2_r, f_c, t1_c, t2_c));

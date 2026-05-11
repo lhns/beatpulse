@@ -25,29 +25,21 @@ pub mod params;
 pub mod shared;
 pub mod ui;
 
-use crate::dsp::aubio_pulse_emitter::AubioPulseEmitter;
-use crate::dsp::aubio_tempo_tracker::AubioTempoTracker;
 use crate::dsp::beat_pll::BeatPll;
-use crate::dsp::beat_tracker::BeatTracker;
-use crate::dsp::consensus_tracker::ConsensusTracker;
-use crate::dsp::pulse_generator::PulseGenerator;
+use crate::dsp::beat_source::BeatSource;
 use crate::dsp::silence_gate::{SilenceGate, Transition};
 use crate::link::publisher::LinkPublisher;
 use crate::midi::formatter::{FormatterConfig, MidiCommand, MidiFormatter};
-use crate::params::{BeatpulseParams, OnsetMethod, TrackingMode};
+use crate::params::{BeatpulseParams, OnsetMethod};
 use crate::shared::{LinkStatus, SharedState};
 
 /// All allocated DSP resources. Constructed in `initialize`, taken down in
 /// `deactivate`.
 struct DspState {
     sample_rate: f32,
-    beat_tracker: BeatTracker,
+    source: BeatSource,
     silence_gate: SilenceGate,
     pll: BeatPll,
-    consensus: ConsensusTracker,
-    aubio_tempo: AubioTempoTracker,
-    aubio_pulse: AubioPulseEmitter,
-    pulse_gen: PulseGenerator,
     midi_formatter: MidiFormatter,
     link: LinkPublisher,
 
@@ -68,6 +60,9 @@ struct DspState {
 
     /// Last applied onset method (so we recreate aubio only on change).
     last_method: OnsetMethod,
+    /// Last applied tracking mode (so we rebuild the source only on
+    /// change).
+    last_mode: crate::params::TrackingMode,
 }
 
 pub struct Beatpulse {
@@ -139,14 +134,21 @@ impl Plugin for Beatpulse {
         let max_block = buffer_config.max_buffer_size as usize;
 
         let onset_method = self.params.onset_method.value();
-        let beat_tracker =
-            match BeatTracker::new(sr as u32, onset_method, self.params.aubio_threshold()) {
-                Ok(t) => t,
-                Err(e) => {
-                    nih_log!("BeatTracker init failed: {e}");
-                    return false;
-                }
-            };
+        let mode = self.params.tracking_mode.value();
+        let source = match BeatSource::new(
+            mode,
+            sr as u32,
+            onset_method,
+            self.params.aubio_threshold(),
+            self.params.lookahead_ms.value() as f64,
+            self.params.pulse_rate.value().as_u32(),
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                nih_log!("BeatSource init failed: {e}");
+                return false;
+            }
+        };
 
         let silence_gate = SilenceGate::new(
             sr as f64,
@@ -157,19 +159,8 @@ impl Plugin for Beatpulse {
         let mut pll = BeatPll::new(sr as f64);
         pll.set_alphas(self.params.alpha_period(), self.params.alpha_phase());
 
-        let pulse_gen = PulseGenerator::new(self.params.pulse_rate.value().as_u32());
         let midi_formatter = MidiFormatter::new();
         let link = LinkPublisher::new(120.0);
-        let consensus = ConsensusTracker::new(sr as f64, self.params.lookahead_ms.value() as f64);
-        let aubio_tempo =
-            match AubioTempoTracker::new(sr as u32, onset_method, self.params.aubio_threshold()) {
-                Ok(t) => t,
-                Err(e) => {
-                    nih_log!("AubioTempoTracker init failed: {e}");
-                    return false;
-                }
-            };
-        let aubio_pulse = AubioPulseEmitter::new(self.params.pulse_rate.value().as_u32());
 
         // Generous capacity: one MIDI event per sample at PPQN=24 is wildly
         // beyond reality, but bounded. Reserve up-front so process never
@@ -178,13 +169,9 @@ impl Plugin for Beatpulse {
 
         self.dsp = Some(DspState {
             sample_rate: sr,
-            beat_tracker,
+            source,
             silence_gate,
             pll,
-            consensus,
-            aubio_tempo,
-            aubio_pulse,
-            pulse_gen,
             midi_formatter,
             link,
             mono_scratch: vec![0.0; max_block.max(1)],
@@ -192,6 +179,7 @@ impl Plugin for Beatpulse {
             absolute_sample: 0,
             last_resync_pressed: false,
             last_method: onset_method,
+            last_mode: mode,
         });
 
         true
@@ -223,10 +211,7 @@ impl Plugin for Beatpulse {
         let resync_now = params.manual_resync.value();
         if resync_now && !dsp.last_resync_pressed {
             dsp.pll.reset();
-            dsp.consensus.reset();
-            dsp.aubio_tempo.reset();
-            dsp.aubio_pulse.reset();
-            dsp.pulse_gen.reset();
+            dsp.source.reset();
             dsp.midi_formatter.reset();
         }
         dsp.last_resync_pressed = resync_now;
@@ -261,57 +246,21 @@ impl Plugin for Beatpulse {
             let t = dsp.silence_gate.tick(s);
             if let Transition::SilentToActive = t {
                 dsp.pll.reset();
-                dsp.consensus.reset();
-                dsp.aubio_tempo.reset();
-                dsp.pulse_gen.reset();
+                dsp.source.reset();
                 dsp.midi_formatter.reset();
                 let _ = i;
             }
         }
         let active = dsp.silence_gate.is_active();
 
-        // 5. Beat tracker: feed the same mono block, collect onsets.
-        // Each onset advances the PLL via on_onset(); but we also need to
-        // run the per-sample phase / PulseGenerator over the same block.
-        // Strategy: advance the PLL phase + emit pulses for the whole
-        // block; for each onset, retroactively call on_onset() at its
-        // sample position.
-        //
-        // Onset positions are reported via callback; we collect into a
-        // small fixed array on the stack rather than allocating.
-        const MAX_ONSETS_PER_BLOCK: usize = 16;
-        let mut onsets: [(u32, u64); MAX_ONSETS_PER_BLOCK] = [(0, 0); MAX_ONSETS_PER_BLOCK];
-        let mut n_onsets = 0usize;
-        // Aubio Tempo emits beats (much sparser than onsets); reuse the
-        // same per-sample-snap pattern.
-        let mut beats: [(u32, u64); MAX_ONSETS_PER_BLOCK] = [(0, 0); MAX_ONSETS_PER_BLOCK];
-        let mut n_beats = 0usize;
+        // 5. Per-block ingest: the active `BeatSource` (Reactive /
+        // Consensus / AubioTempo) processes the mono block, schedules
+        // its events, and (for Consensus) snaps the PLL up-front.
         if active {
-            let abs = dsp.absolute_sample;
-            let mode = params.tracking_mode.value();
-            match mode {
-                TrackingMode::AubioTempo => {
-                    dsp.aubio_tempo
-                        .process_block(mono, abs, |offset, abs_sample| {
-                            if n_beats < MAX_ONSETS_PER_BLOCK {
-                                beats[n_beats] = (offset, abs_sample);
-                                n_beats += 1;
-                            }
-                        });
-                }
-                TrackingMode::Reactive | TrackingMode::LookaheadConsensus => {
-                    dsp.beat_tracker.process_block(mono, |offset, _frac| {
-                        if n_onsets < MAX_ONSETS_PER_BLOCK {
-                            onsets[n_onsets] = (offset, abs + offset as u64);
-                            n_onsets += 1;
-                        }
-                    });
-                }
-            }
+            dsp.source.process_block(mono, block_start, &mut dsp.pll);
         }
 
-        // 6. Drive the PLL + PulseGenerator over the block, applying onsets
-        // at their sample positions and emitting pulses.
+        // 6. Per-sample loop: advance PLL + emit pulses via the source.
         dsp.midi_out.clear();
         // First flush any due note-offs that were scheduled in previous
         // blocks.
@@ -322,63 +271,9 @@ impl Plugin for Beatpulse {
             let cfg = formatter_config(&params, dsp.sample_rate);
             let latency_offset_samples =
                 (params.latency_offset_ms.value() / 1000.0 * dsp.sample_rate) as i32;
-            let tracking_mode = params.tracking_mode.value();
-
-            // Lookahead-consensus path: ingest all onsets up-front, then
-            // let the tracker prune + snap the PLL atomically via
-            // `try_snap_pll`. The per-sample loop below only advances
-            // phase and emits pulses (no per-onset PLL feedback). See
-            // ADR-0026.
-            if matches!(tracking_mode, TrackingMode::LookaheadConsensus) {
-                for (_, abs_sample) in onsets.iter().take(n_onsets) {
-                    dsp.consensus.on_onset(*abs_sample);
-                }
-                dsp.consensus
-                    .try_snap_pll(&mut dsp.pll, block_start, n_samples as u64);
-            }
-
-            let aubio_mode = matches!(tracking_mode, TrackingMode::AubioTempo);
-            let mut next_onset = 0usize;
-            let mut next_beat = 0usize;
             for i in 0..n_samples as u32 {
-                // For AubioTempo: an on-beat pulse fires from the
-                // dedicated `AubioPulseEmitter` directly at the aubio
-                // beat sample (no PLL wrap-detection wobble — see
-                // ADR-0027 update). The PLL snap still happens so the
-                // BPM display + Link publishing reflect the locked
-                // tempo.
-                let mut on_beat_pulse: Option<crate::dsp::pulse_generator::PulseEvent> = None;
-                while next_beat < n_beats && beats[next_beat].0 == i {
-                    if aubio_mode {
-                        dsp.aubio_tempo
-                            .snap_pll_at_beat(&mut dsp.pll, beats[next_beat].1);
-                        if let Some(mut ev) = dsp.aubio_pulse.on_beat(beats[next_beat].1) {
-                            ev.sample_offset = i;
-                            on_beat_pulse = Some(ev);
-                        }
-                    }
-                    next_beat += 1;
-                }
-                while next_onset < n_onsets && onsets[next_onset].0 == i {
-                    if matches!(tracking_mode, TrackingMode::Reactive) {
-                        dsp.pll.on_onset(onsets[next_onset].1 as f64);
-                    }
-                    next_onset += 1;
-                }
-                // Advance PLL one sample and check for a pulse.
-                dsp.pll.advance_one();
-                let pulse = if aubio_mode {
-                    on_beat_pulse.or_else(|| {
-                        let abs = block_start + i as u64;
-                        dsp.aubio_pulse.tick(abs).map(|mut ev| {
-                            ev.sample_offset = i;
-                            ev
-                        })
-                    })
-                } else {
-                    dsp.pulse_gen.observe_advance(&dsp.pll, i)
-                };
-                if let Some(mut ev) = pulse {
+                let abs = block_start + i as u64;
+                if let Some(mut ev) = dsp.source.tick(i, abs, &mut dsp.pll) {
                     shared.bump_pulse();
                     if ev.is_beat_boundary {
                         shared.bump_beat();
@@ -396,13 +291,6 @@ impl Plugin for Beatpulse {
                             .on_pulse(ev, block_start, &cfg, &mut dsp.midi_out);
                     }
                 }
-            }
-            // Any onsets at sample==n_samples (rare): apply at end of block.
-            while next_onset < n_onsets {
-                if matches!(tracking_mode, TrackingMode::Reactive) {
-                    dsp.pll.on_onset(onsets[next_onset].1 as f64);
-                }
-                next_onset += 1;
             }
         } else {
             // Silent: still advance PLL phase so it doesn't desync.
@@ -479,19 +367,40 @@ fn update_dsp_from_params(dsp: &mut DspState, params: &BeatpulseParams) {
         .set_release_ms(params.silence_release.value() as f64);
     dsp.pll
         .set_alphas(params.alpha_period(), params.alpha_phase());
-    dsp.pulse_gen
+    dsp.source
         .set_pulse_rate(params.pulse_rate.value().as_u32());
-    dsp.aubio_pulse
-        .set_pulse_rate(params.pulse_rate.value().as_u32());
-    dsp.beat_tracker.set_threshold(params.aubio_threshold());
-    dsp.aubio_tempo.set_threshold(params.aubio_threshold());
-    dsp.consensus
-        .set_window_ms(params.lookahead_ms.value() as f64);
+    dsp.source.set_threshold(params.aubio_threshold());
+    dsp.source
+        .set_lookahead_ms(params.lookahead_ms.value() as f64);
+
+    // Tracking mode change → rebuild the source. Audio thread runs
+    // single-threaded so allocation here is theoretically RT-unsafe,
+    // but UI mode changes are user-driven (rare; per ADR-0026/0027)
+    // and the alternative — pre-allocating all three sources up-front
+    // even when only one is in use — wastes memory and complicates
+    // state hygiene. nih-plug's `assert_process_allocs` may flag this;
+    // accepted trade-off.
+    let mode = params.tracking_mode.value();
+    if mode != dsp.last_mode {
+        if let Ok(s) = crate::dsp::beat_source::BeatSource::new(
+            mode,
+            dsp.sample_rate as u32,
+            params.onset_method.value(),
+            params.aubio_threshold(),
+            params.lookahead_ms.value() as f64,
+            params.pulse_rate.value().as_u32(),
+        ) {
+            dsp.source = s;
+            dsp.pll.reset();
+            dsp.last_mode = mode;
+            dsp.last_method = params.onset_method.value();
+            return;
+        }
+    }
 
     let onset_method = params.onset_method.value();
     if onset_method != dsp.last_method {
-        let _ = dsp.beat_tracker.set_method(onset_method);
-        let _ = dsp.aubio_tempo.set_method(onset_method);
+        let _ = dsp.source.set_method(onset_method);
         dsp.last_method = onset_method;
     }
 }
