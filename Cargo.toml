@@ -20,6 +20,7 @@ nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "28b149e
 nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "28b149ec4d62757d0b448809148a0c3ca6e09a95" }
 aubio-rs = "0.2"
 rusty_link = "0.4"
+realfft = "3"
 atomic_float = "1"
 parking_lot = "0.12"
 

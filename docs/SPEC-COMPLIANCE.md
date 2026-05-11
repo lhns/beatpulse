@@ -160,6 +160,11 @@ locally after fetching datasets — not part of CI):
   (deferred — see ADR-0028 for the future-direction record).
 - GiantSteps Tempo: not measurable (both upstream mirrors dead).
 - SMC_MIREX: not measured (INESC mirror down).
+- *Klapuri 2006 attempt* (`tests/klapuri_experiment.rs`): from-paper
+  implementation in `src/dsp/klapuri/` scored F=0.277 on Ballroom — well
+  below AubioTempo (0.590). Not integrated into `BeatSource`. Plausible
+  causes (phase argmax, scoring weights, missing measure-level
+  inference) recorded in ADR-0028.
 
 σ of reported BPM is *not* a useful proxy here: reactive has low σ even
 when locked on the wrong tempo (smooth drift); consensus has high σ
