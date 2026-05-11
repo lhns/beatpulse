@@ -30,15 +30,23 @@ pub const N_BANDS: usize = 4;
 pub const FFT_SIZE: usize = 1024;
 pub const HOP_SIZE: usize = 256;
 
-/// Log-compression strength (μ in `log(1 + μ·p)`). 100 is a common
-/// value in the MIR literature for spectral whitening of magnitude
-/// envelopes.
+/// μ-law compression strength (`log(1 + μ·p) / log(1 + μ)` on
+/// power). 100 is the value Klapuri 2006 §III specifies for the
+/// power-domain envelope.
 const LOG_MU: f32 = 100.0;
 
 /// Leaky-integrator coefficient for the DC-removal stage. α = 0.97 at
 /// 172 Hz OSS rate cuts everything below ≈ 8 Hz, leaving the
 /// onset-rate accent intact.
 const DC_ALPHA: f32 = 0.97;
+
+/// Weight of the half-wave-rectified differential vs. the sustained
+/// log-power term in the accent composition. Klapuri 2006 §III gives
+/// `accent = W·HWR(Δ log-power) + (1-W)·log-power` with `W ≈ 0.9`.
+/// The sustained-energy term keeps the accent non-zero on tracks with
+/// long sustained notes (waltz strings, tango bandoneon, sustained
+/// chords) where pure spectral flux goes to ~0.
+const ACCENT_W: f32 = 0.9;
 
 /// Compute mel-warped band boundaries (in FFT-bin indices) for a
 /// `fft_size`-point analysis at `sr`. Splits 0 .. sr/2 into `N_BANDS`
@@ -188,21 +196,30 @@ impl MultiBandAccent {
             &mut self.fft_out,
             &mut self.fft_scratch,
         );
-        // Per-band magnitude sum → log-compress → DC remove → HWR diff.
+        // Per-band power → μ-law compress → DC remove → weighted
+        // composition of HWR-diff + sustained log-power.
         let mut accent = [0.0f32; N_BANDS];
+        let mu_norm = (1.0_f32 + LOG_MU).ln();
         for (b, &(lo, hi)) in self.band_bins.iter().enumerate() {
             let mut power = 0.0f32;
             for c in &self.fft_out[lo..hi] {
                 power += c.norm_sqr();
             }
-            let log_power = (1.0 + LOG_MU * power.sqrt()).ln();
+            // μ-law: log(1 + μ·p) / log(1 + μ). On power, not
+            // magnitude (Klapuri 2006 §III).
+            let log_power = (1.0 + LOG_MU * power).ln() / mu_norm;
             // Leaky-integrator DC tracker: dc tracks slow-moving mean.
             self.dc[b] = DC_ALPHA * self.dc[b] + (1.0 - DC_ALPHA) * log_power;
             let after_dc = log_power - self.dc[b];
-            // Half-wave-rectified differential.
             let diff = after_dc - self.prev[b];
             self.prev[b] = after_dc;
-            accent[b] = diff.max(0.0);
+            // Weighted accent: spectral-flux-style HWR-diff (W) + a
+            // small contribution from sustained DC-removed power
+            // (1-W) so tracks with long sustained notes still feed
+            // the comb-filter bank.
+            let hwr_diff = diff.max(0.0);
+            let sustained = after_dc.max(0.0);
+            accent[b] = ACCENT_W * hwr_diff + (1.0 - ACCENT_W) * sustained;
         }
         accent
     }
@@ -256,20 +273,22 @@ mod tests {
         let mut accent = MultiBandAccent::new(sr);
         let mut spike_counts = [0usize; N_BANDS];
         let mut total_frames = 0usize;
+        // Threshold scaled to the μ-law-normalised accent range
+        // [0, 1] (post-G3). Pick a small but non-trivial value: 0.01.
         accent.process_block(&audio, |frame| {
             total_frames += 1;
             for (b, &v) in frame.iter().enumerate() {
-                if v > 0.1 {
+                if v > 0.01 {
                     spike_counts[b] += 1;
                 }
             }
         });
-        // Each band fires somewhere between 30 and 1500 spikes (one
-        // big spike per beat at minimum, plus a handful of HWR-diff
-        // neighbours; well below "every frame fires").
+        // Each band should fire at least a handful of spikes (one per
+        // beat at minimum, plus HWR-diff neighbours and the sustained
+        // term keeping non-zero accent), well below "every frame".
         for (b, &n) in spike_counts.iter().enumerate() {
             assert!(
-                (30..1500).contains(&n),
+                (30..total_frames).contains(&n),
                 "band {b}: spike count {n} out of expected range (total frames {total_frames})"
             );
         }

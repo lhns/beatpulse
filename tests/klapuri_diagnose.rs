@@ -36,6 +36,7 @@ const FFT_SIZE: usize = 1024;
 const HOP_SIZE: usize = 256;
 const LOG_MU: f32 = 100.0;
 const DC_ALPHA: f32 = 0.97;
+const ACCENT_W: f32 = 0.9;
 
 /// Mirror of `src/dsp/klapuri/accent.rs::mel_band_bins`.
 fn mel_band_bins(sr: u32, fft_size: usize) -> [(usize, usize); N_BANDS] {
@@ -163,14 +164,17 @@ impl DiagAccent {
             if power > self.per_band_power_max[b] {
                 self.per_band_power_max[b] = power;
             }
-            let log_power = (1.0 + LOG_MU * power.sqrt()).ln();
+            let mu_norm = (1.0_f32 + LOG_MU).ln();
+            let log_power = (1.0 + LOG_MU * power).ln() / mu_norm;
             self.per_band_logp_sum[b] += log_power as f64;
             self.dc[b] = DC_ALPHA * self.dc[b] + (1.0 - DC_ALPHA) * log_power;
             self.per_band_dc_sum[b] += self.dc[b] as f64;
             let after_dc = log_power - self.dc[b];
             let diff = after_dc - self.prev[b];
             self.prev[b] = after_dc;
-            let acc = diff.max(0.0);
+            let hwr_diff = diff.max(0.0);
+            let sustained = after_dc.max(0.0);
+            let acc = ACCENT_W * hwr_diff + (1.0 - ACCENT_W) * sustained;
             accent[b] = acc;
             self.per_band_accent_sum[b] += acc as f64;
             if acc > self.per_band_accent_max[b] {
@@ -340,7 +344,7 @@ fn dump_inference_state(audio: &[f32]) {
     let sr = TARGET_SR;
     let oss_rate = sr as f32 / HOP_SIZE as f32;
     let periods = default_period_range(sr, HOP_SIZE);
-    let mut bank = ResonatorBank::new(&periods);
+    let mut bank = ResonatorBank::new(&periods, sr as f32 / HOP_SIZE as f32);
     let mut inf = PeriodInference::new(oss_rate);
     let mut diag = DiagAccent::new(sr);
 

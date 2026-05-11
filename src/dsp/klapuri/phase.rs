@@ -50,7 +50,7 @@ impl KlapuriTracker {
         let hop = HOP_SIZE;
         let accent = MultiBandAccent::with_size(sr, FFT_SIZE, hop);
         let periods = default_period_range(sr, hop);
-        let bank = ResonatorBank::new(&periods);
+        let bank = ResonatorBank::new(&periods, sr as f32 / hop as f32);
         let inference = PeriodInference::new(sr as f32 / hop as f32);
         Self {
             sr,

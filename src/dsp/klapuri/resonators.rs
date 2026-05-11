@@ -85,18 +85,29 @@ impl Resonator {
 }
 
 /// Compute the IIR comb α such that the response decays to half its
-/// initial energy after `tau` samples (Klapuri's "half-energy time =
-/// one period" convention).
+/// initial energy after a *fixed wall-clock time* `T₀.₅` regardless
+/// of τ (Klapuri 2006 §IV-B). This contrasts with the "half-energy
+/// at one period" convention used previously, which gave τ-dependent
+/// integration windows.
 ///
-/// Energy of an IIR comb at lag-multiples decays as `α^(2k)` per
-/// τ-sample step → α = 0.5^(1/(2τ)) for half-energy at one period.
-/// In practice the form `α = 0.5^(1/τ)` is also widely used (half-
-/// amplitude rather than half-energy); we use the energy convention.
-pub fn alpha_for_period(tau: usize) -> f32 {
-    if tau == 0 {
+/// Per period τ, the loop gain decays by α; over k periods (= k·τ
+/// ticks at OSS rate) the gain is α^k. Setting α^k = 0.5 with
+/// k = T₀.₅ · fs_env / τ gives `α = 0.5^(τ / (T₀.₅ · fs_env))`.
+///
+/// At T₀.₅ = 3 s, τ=86 (120 BPM @ 172 Hz OSS), the resonator
+/// integrates ~6 periods of beat evidence — much more discriminative
+/// than the 2-period window the prior formula gave.
+const HALF_ENERGY_SECONDS: f32 = 3.0;
+
+pub fn alpha_for_period(tau: usize, oss_rate: f32) -> f32 {
+    if tau == 0 || oss_rate <= 0.0 {
         return 0.0;
     }
-    0.5_f32.powf(1.0 / (2.0 * tau as f32))
+    let periods_per_t_half = (HALF_ENERGY_SECONDS * oss_rate) / tau as f32;
+    if periods_per_t_half <= 0.0 {
+        return 0.0;
+    }
+    0.5_f32.powf(1.0 / periods_per_t_half)
 }
 
 pub struct ResonatorBank {
@@ -113,12 +124,12 @@ pub struct ResonatorBank {
 }
 
 impl ResonatorBank {
-    pub fn new(periods: &[usize]) -> Self {
+    pub fn new(periods: &[usize], oss_rate: f32) -> Self {
         let resonators: Vec<Vec<Resonator>> = (0..N_BANDS)
             .map(|_| {
                 periods
                     .iter()
-                    .map(|&t| Resonator::new(t, alpha_for_period(t)))
+                    .map(|&t| Resonator::new(t, alpha_for_period(t, oss_rate)))
                     .collect()
             })
             .collect();
@@ -259,7 +270,7 @@ mod tests {
     #[test]
     fn impulse_train_excites_matched_period_among_topk() {
         let periods: Vec<usize> = (40..=200).collect();
-        let mut bank = ResonatorBank::new(&periods);
+        let mut bank = ResonatorBank::new(&periods, 44100.0 / 256.0);
         let target = 86usize;
         for i in 0..3000 {
             let accent = if i % target == 0 {
@@ -297,7 +308,7 @@ mod tests {
     #[test]
     fn impulse_train_with_jitter_still_above_median() {
         let periods: Vec<usize> = (40..=200).collect();
-        let mut bank = ResonatorBank::new(&periods);
+        let mut bank = ResonatorBank::new(&periods, 44100.0 / 256.0);
         let target = 86usize;
         let mut seed: u32 = 0xABCDEF12;
         let mut next_imp = 0i64;
@@ -324,14 +335,22 @@ mod tests {
         );
     }
 
-    /// alpha_for_period should be in (0, 1) and monotonically increase
-    /// with τ.
+    /// `alpha_for_period` should be in (0, 1). With the fixed-3-second
+    /// half-energy convention, α *decreases* with τ (longer periods
+    /// fit fewer cycles in 3s, so each cycle decays faster).
     #[test]
-    fn alpha_for_period_monotonic() {
-        let prev = alpha_for_period(40);
-        let next = alpha_for_period(200);
-        assert!(prev > 0.0 && prev < 1.0, "alpha out of range: {prev}");
-        assert!(next > prev, "alpha should grow with τ: {prev} → {next}");
+    fn alpha_for_period_in_range() {
+        let oss = 44100.0 / 256.0;
+        let short = alpha_for_period(40, oss);
+        let long = alpha_for_period(200, oss);
+        assert!(short > 0.0 && short < 1.0, "α out of range: {short}");
+        assert!(long > 0.0 && long < 1.0, "α out of range: {long}");
+        // Short τ → fits more cycles in 3s → loop gain per cycle larger
+        // → α larger. Long τ → fewer cycles in 3s → α smaller.
+        assert!(
+            short > long,
+            "α should be larger for short τ under fixed-T₀.₅ convention: {short} > {long}"
+        );
     }
 
     /// default_period_range(44100, 256) covers tactus candidates 60-220
@@ -376,7 +395,7 @@ mod tests {
     #[test]
     fn phase_of_zero_just_after_impulse() {
         let periods: Vec<usize> = (40..=200).collect();
-        let mut bank = ResonatorBank::new(&periods);
+        let mut bank = ResonatorBank::new(&periods, 44100.0 / 256.0);
         let target = 86usize;
         for cycles in 0..10 {
             for i in 0..target {
@@ -406,7 +425,7 @@ mod tests {
     #[test]
     fn phase_of_picks_modal_phase_under_jitter() {
         let periods: Vec<usize> = (40..=200).collect();
-        let mut bank = ResonatorBank::new(&periods);
+        let mut bank = ResonatorBank::new(&periods, 44100.0 / 256.0);
         let target = 86usize;
         let mut seed: u32 = 0xABCDEF12;
         let mut next_imp: i64 = 0;
@@ -448,7 +467,7 @@ mod tests {
     #[test]
     fn phase_of_robust_to_loud_offbeat_transient() {
         let periods: Vec<usize> = (40..=200).collect();
-        let mut bank = ResonatorBank::new(&periods);
+        let mut bank = ResonatorBank::new(&periods, 44100.0 / 256.0);
         let target = 86usize;
         // Warm up with 20 cycles of clean impulse train.
         for i in 0..(target * 20) {
@@ -490,7 +509,7 @@ mod tests {
     #[test]
     fn energy_distribution_bounded_for_random_accent() {
         let periods: Vec<usize> = (40..=200).collect();
-        let mut bank = ResonatorBank::new(&periods);
+        let mut bank = ResonatorBank::new(&periods, 44100.0 / 256.0);
         let mut seed: u32 = 0xCAFEF00D;
         for _ in 0..6000 {
             seed = seed.wrapping_mul(48271) % 2_147_483_647;

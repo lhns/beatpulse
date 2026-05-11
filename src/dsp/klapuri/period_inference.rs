@@ -145,7 +145,7 @@ mod tests {
     fn inference_picks_correct_octave_on_clean_120bpm() {
         let oss_rate = 44_100.0 / 256.0;
         let periods: Vec<usize> = (40..=200).collect();
-        let mut bank = ResonatorBank::new(&periods);
+        let mut bank = ResonatorBank::new(&periods, 44100.0 / 256.0);
         let target = 86usize;
         for i in 0..4000 {
             let accent = if i % target == 0 {
@@ -174,7 +174,7 @@ mod tests {
     fn inference_picks_tactus_not_subdivision_on_full_mix_pattern() {
         let oss_rate = 44_100.0 / 256.0;
         let periods: Vec<usize> = (40..=200).collect();
-        let mut bank = ResonatorBank::new(&periods);
+        let mut bank = ResonatorBank::new(&periods, 44100.0 / 256.0);
         // Period τ=86 for kick, with snare hits at offset 43.
         let beat = 86usize;
         for i in 0..4000 {
@@ -204,7 +204,7 @@ mod tests {
     fn inference_picks_slow_tempo_despite_prior_offset() {
         let oss_rate = 44_100.0 / 256.0;
         let periods: Vec<usize> = (40..=200).collect();
-        let mut bank = ResonatorBank::new(&periods);
+        let mut bank = ResonatorBank::new(&periods, 44100.0 / 256.0);
         let target = 128usize;
         for i in 0..5000 {
             let accent = if i % target == 0 {
@@ -275,7 +275,7 @@ mod tests {
         // Use the production default_period_range so this test
         // exercises the realistic bank.
         let periods = default_period_range(44_100, 256);
-        let mut bank = ResonatorBank::new(&periods);
+        let mut bank = ResonatorBank::new(&periods, 44100.0 / 256.0);
         let target = 86usize;
         for i in 0..4000 {
             let accent = if i % target == 0 {

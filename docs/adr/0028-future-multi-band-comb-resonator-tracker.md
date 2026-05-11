@@ -107,6 +107,32 @@ TA1 (strict tempo) **quadrupled** (1.7 % → 6.6 %), TA2 **nearly tripled** (3.1
 
 **Per the plan's Phase F gate (F < 0.45 → stop), this stays Rejected.** Three debugging passes, three real bugs fixed, but the algorithm still substantially underperforms aubio on Ballroom. Klapuri-from-paper appears to need significantly more work than a single implementation pass — either more bugs we haven't found, a structurally different accent pipeline, or the missing measure-level joint inference. The implementation in `src/dsp/klapuri/` (now with the per-τ normalisation fix) is preserved for any future fourth attempt; 19 component unit tests + the `klapuri_diagnose.rs` harness make further diagnosis straightforward.
 
+## Update — fourth debugging pass: aligning with open-source reference filters
+
+User pushed back on the residual ~92 % wrong-tempo rate and suggested checking open-source references. Comparison against madmom (`features/onsets.py`, `features/tempo.py`, `audio/comb_filters.py`), librosa (`feature/rhythm.py`), and Essentia (`rhythm/rhythmextractor2013.cpp`) found three concrete divergences from the paper-only implementation:
+
+1. **α formula gave wrong integration window.** Original: `α = 0.5^(1/(2τ))` — half-energy at one period (~ 0.5 s at τ=86). Klapuri-correct: `α = 0.5^(τ / (T₀.₅·fs_env))` with `T₀.₅ = 3 s` — half-energy at a **fixed 3 seconds** regardless of τ. At 120 BPM that's ~6 periods of evidence integration vs the old 2. Mine averaged too quickly; resonators couldn't discriminate between similar tempos. Fix: `resonators.rs::alpha_for_period` now takes the OSS rate and uses the 3-second convention.
+
+2. **Missing weighted-differential accent composition.** Klapuri §III: `accent = W·HWR(Δ log-power) + (1-W)·log-power`, with `W ≈ 0.9`. Mine was pure HWR-diff, missing the `(1-W)·log-power` sustained-energy term. On Ballroom — full of sustained notes (waltz strings, tango bandoneon) — pure spectral flux goes to ≈ 0 and the comb bank sees no input. Fix: weighted composition in `accent.rs::run_frame`.
+
+3. **Log-compression not μ-law normalised.** Original: `log(1 + μ·magnitude)` with μ=100. Klapuri-correct: `log(1 + μ·power) / log(1 + μ)` — on power not magnitude, and divided by `log(1+μ)` to normalise to [0, 1]. Fix: both changes in `accent.rs::run_frame`.
+
+Re-measured on Ballroom (n=687, same scoring):
+
+| Pass | F | AMLt | TA1 | TA2 |
+|---|---|---|---|---|
+| Pre-debugging | 0.277 | 0.080 | 0.044 | 0.045 |
+| 2nd pass (cross-corr + range + prior) | 0.318 | 0.043 | 0.017 | 0.031 |
+| 3rd pass (+ gain normalisation) | 0.330 | 0.070 | 0.066 | 0.080 |
+| **4th pass (reference-aligned filters)** | **0.369** | **0.160** | **0.242** | **0.255** |
+| AubioTempo (reference) | 0.590 | 0.459 | 0.592 | 0.777 |
+
+TA1 **3.7× better** (6.6 % → 24.2 %), TA2 **3.2× better** (8.0 % → 25.5 %), AMLt doubled (0.07 → 0.16), F up to 0.369 from 0.330. **The algorithm now genuinely tracks ~25 % of Ballroom tracks correctly** — no longer broken, just not as good as aubio.
+
+The 3-second integration window (G1) and the sustained-energy accent term (G2) are the load-bearing fixes — together they let the bank discriminate tempos that were previously indistinguishable. The μ-law normalisation (G3) is a smaller adjustment that mostly keeps values in a sensible range.
+
+**Per the Phase H gate (F ∈ [0.35, 0.45] → don't integrate but document convergence), this stays Rejected** with the new measurement. The algorithm has converged to a genuinely-working-but-not-competitive state: aubio is still 60 % better on F and 3× better on tempo accuracy. To close the remaining gap would require implementing Klapuri's full joint tatum/tactus/measure posterior (we only do tactus + tatum subharmonics) and probably the dynamic-programming continuity constraint for phase. Both are non-trivial; deferred indefinitely. Production stays on `TrackingMode::AubioTempo` at F=0.59 / TA2=0.78.
+
 **What would be needed to make Klapuri work for us:**
 
 - Per-genre / per-track sub-harmonic weight calibration (the over-extended range needs a per-τ weight that decays for very short τ, instead of a flat `w_tatum_half`).
