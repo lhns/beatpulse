@@ -36,14 +36,14 @@ See [`BeatPulse-SPEC.md`](BeatPulse-SPEC.md) for the design and
 - **Decoupled controls.** Sensitivity (aubio threshold + phase-lock
   rate) and Stability (period smoothing) are separate knobs — no
   fighting between "detect more onsets" and "less BPM jitter".
-- **Three tracking modes.** *Aubio Tempo* (default since 2026-05-11) —
-  aubio's autocorrelation-based beat tracker; F=0.55 / TA2=0.74 on
-  Ballroom (n=698), in literature range. Same per-block latency as
-  Reactive (~11 ms at 44.1 kHz). *Reactive* — per-onset PLL feedback;
-  lowest latency but locks to wrong tempos on most full-mix material
-  (F=0.29). Useful as a baseline for very clean drum-bus sources.
-  *Lookahead Consensus* — buffers onsets over a configurable window
-  (200–3000 ms, default 2000), median IOI for period selection
+- **Three tracking modes.** *Aubio Tempo* (default) — aubio's
+  autocorrelation-based beat tracker; **F=0.59 / AMLt=0.46 / TA2=0.78
+  on Ballroom** (n=687, mir_eval-standard scoring). Same per-block
+  latency as Reactive (~11 ms at 44.1 kHz). *Reactive* — per-onset PLL
+  feedback; lowest latency but locks to wrong tempos on most full-mix
+  material (F=0.28). Useful as a baseline for very clean drum-bus
+  sources. *Lookahead Consensus* — buffers onsets over a configurable
+  window (200–3000 ms, default 2000), median IOI for period selection
   (F=0.44); steadier BPM on noisy input but adds the configured
   lookahead of latency, compensable via the Latency offset slider
   (`≈ −lookahead/2`). See ADR-0026 (Consensus) and ADR-0027 (Aubio

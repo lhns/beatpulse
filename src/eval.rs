@@ -202,6 +202,22 @@ fn continuity_at_level(reference: &[f64], estimate: &[f64], factor: f64, offset_
     max_run as f64 / expected.len() as f64
 }
 
+/// `mir_eval.beat.trim_beats` analogue — drop beats earlier than
+/// `min_t` seconds. Standard convention is `min_t = 5.0` to skip the
+/// "warm-up" period before causal trackers have locked. Apply to both
+/// reference and estimate before computing F-measure / continuity for
+/// fair comparison against published numbers.
+pub fn trim_beats(beats: &[f64], min_t: f64) -> Vec<f64> {
+    beats.iter().copied().filter(|&t| t >= min_t).collect()
+}
+
+/// AMLt = the second component of [`continuity`]. Thin convenience
+/// wrapper for callers that only want the octave-tolerant continuity
+/// metric.
+pub fn amlt(reference: &[f64], estimate: &[f64]) -> f64 {
+    continuity(reference, estimate).1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +313,26 @@ mod tests {
         // CMLt should be low (wrong metrical level), AMLt should be high.
         assert!(cmlt < 0.5, "cmlt={cmlt} expected < 0.5");
         assert!(amlt > 0.8, "amlt={amlt} expected > 0.8");
+    }
+
+    #[test]
+    fn trim_beats_drops_warmup() {
+        let beats = vec![0.5, 2.0, 4.9, 5.0, 5.1, 10.0];
+        let kept = trim_beats(&beats, 5.0);
+        assert_eq!(kept, vec![5.0, 5.1, 10.0]);
+    }
+
+    #[test]
+    fn trim_beats_empty_when_all_below_threshold() {
+        let beats = vec![0.5, 1.0, 2.0];
+        assert!(trim_beats(&beats, 5.0).is_empty());
+    }
+
+    #[test]
+    fn amlt_matches_continuity_second() {
+        let r = beats_at(120.0, 30, 0.5);
+        let e = beats_at(240.0, 60, 0.5);
+        let (_, expected) = continuity(&r, &e);
+        assert_relative_eq!(amlt(&r, &e), expected, epsilon = 1e-9);
     }
 }

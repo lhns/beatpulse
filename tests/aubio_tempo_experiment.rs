@@ -20,10 +20,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use aubio_rs::{OnsetMode, Tempo};
-use beatpulse::eval::{f_measure, tempo_accuracy_2, F_MEASURE_TOL, TEMPO_ACC_TOL};
+use beatpulse::eval::{
+    amlt, f_measure, tempo_accuracy_2, trim_beats, F_MEASURE_TOL, TEMPO_ACC_TOL,
+};
 
 mod common;
 use common::audio::decode_mono_44k1;
+use common::datasets::{is_ballroom_duplicate, TRIM_BEATS_MIN_T};
 
 const TARGET_SR: u32 = 44_100;
 const BUF_SIZE: usize = 1024;
@@ -87,6 +90,10 @@ fn aubio_tempo_ballroom() {
     eprintln!("[tempo] pre-decoding {} tracks…", wavs.len());
     let mut bench: Vec<(Vec<f32>, Vec<f64>)> = Vec::with_capacity(wavs.len());
     for wav in &wavs {
+        let stem = wav.file_stem().unwrap().to_string_lossy().into_owned();
+        if is_ballroom_duplicate(&stem) {
+            continue;
+        }
         let beats_path = wav.with_extension("beats");
         if !beats_path.exists() {
             continue;
@@ -102,28 +109,37 @@ fn aubio_tempo_ballroom() {
     eprintln!("[tempo] {} tracks ready", bench.len());
 
     let methods = [
-        ("SpecFlux", OnsetMode::SpecFlux),
-        ("Complex", OnsetMode::Complex),
         ("HFC", OnsetMode::Hfc),
+        ("Complex", OnsetMode::Complex),
+        ("SpecDiff", OnsetMode::SpecDiff),
+        ("KL", OnsetMode::Kl),
+        ("MKL", OnsetMode::Mkl),
+        ("Phase", OnsetMode::Phase),
+        ("SpecFlux", OnsetMode::SpecFlux),
     ];
 
     println!(
-        "\n--- Aubio Tempo experiment on full Ballroom (n={}) ---",
+        "\n--- Aubio Tempo full sweep on Ballroom (n={}, trim_beats(5.0), dups skipped) ---",
         bench.len()
     );
-    println!("{:<10}  {:>6}  {:>6}", "method", "F_mean", "TA2");
+    println!("{:<10}  {:>6}  {:>6}  {:>6}", "method", "F", "AMLt", "TA2");
     for (name, method) in &methods {
         let mut sum_f = 0.0f64;
+        let mut sum_a = 0.0f64;
         let mut ta2 = 0usize;
         for (audio, truth) in &bench {
             let est = run_tempo(audio, *method);
-            sum_f += f_measure(truth, &est, F_MEASURE_TOL);
-            if tempo_accuracy_2(truth, &est, TEMPO_ACC_TOL) {
+            let r_t = trim_beats(truth, TRIM_BEATS_MIN_T);
+            let e_t = trim_beats(&est, TRIM_BEATS_MIN_T);
+            sum_f += f_measure(&r_t, &e_t, F_MEASURE_TOL);
+            sum_a += amlt(&r_t, &e_t);
+            if tempo_accuracy_2(&r_t, &e_t, TEMPO_ACC_TOL) {
                 ta2 += 1;
             }
         }
         let f_mean = sum_f / bench.len() as f64;
+        let a_mean = sum_a / bench.len() as f64;
         let ta2_rate = ta2 as f64 / bench.len() as f64;
-        println!("{name:<10}  {f_mean:>6.3}  {ta2_rate:>6.3}");
+        println!("{name:<10}  {f_mean:>6.3}  {a_mean:>6.3}  {ta2_rate:>6.3}");
     }
 }

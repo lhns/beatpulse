@@ -30,6 +30,16 @@ Reactive and Lookahead Consensus remain available as alternatives. Reactive stay
 
 **The integrated F=0.547 is below the standalone aubio Tempo's F=0.576** (measured in `tests/aubio_tempo_experiment.rs`). The ~0.03 gap is induced by `PulseGenerator`'s wrap-detection re-emitting beats: aubio's raw beat times go through PulseGenerator (PPQN=1) which adds a small timing wobble around each PLL period boundary. Acceptable trade-off — keeps the entire pipeline (LED + MIDI + Link) downstream of `PulseGenerator` unchanged, single source of truth for beat emission.
 
+## Update 2026-05-12
+
+The integrated-vs-standalone gap was closed. New `src/dsp/aubio_pulse_emitter.rs::AubioPulseEmitter` emits the on-beat pulse at the exact aubio beat sample (no wrap-detection) and linearly interpolates PPQN sub-beats between consecutive aubio beats. `lib.rs::process` dispatches on `tracking_mode`: AubioTempo uses `AubioPulseEmitter`, Reactive/Consensus continue to use `PulseGenerator`. Both downstream paths feed the same `MidiFormatter` / Link publishing.
+
+Combined with `mir_eval`-standard scoring (`trim_beats(5.0)` + Sturm-2013 duplicate skip), final integrated AubioTempo on Ballroom (n=687) is **F=0.590, AMLt=0.459, TA2=0.777** — matching standalone aubio Tempo (F=0.590) exactly, in literature range for TA2. Reactive 0.284, Consensus 0.437 with the same scoring. ΔF(aubio−reactive)=+0.306; AubioTempo wins outright on 394/687 tracks (57 %).
+
+A 7-method aubio-Tempo sweep (`tests/aubio_tempo_experiment.rs`) confirmed SpecFlux is the optimal onset method: SpecFlux=0.590, SpecDiff=0.584, Complex=0.557, KL=0.554, HFC=0.499, Phase=0.404, MKL=0.391. SpecFlux remains the default.
+
+The remaining ~0.07 gap to OBTAIN's published F=0.66 for aubio on Ballroom is most likely annotation-set version (CPJKU vs original Gouyon), aubio version drift, or sample-rate convention differences. Closing further would require either a neural beat tracker (M5; deferred) or the Klapuri 2006-style multi-band-accent + comb-filter resonator family — see ADR-0028 for the future-direction record.
+
 **Ballroom F=0.547 is short of the literature's 0.75–0.85.** Possible causes (out of scope for this ADR, tracked as follow-up): `PulseGenerator`'s wobble (~0.03), Ballroom annotation alignment relative to BeatPulse's "beat moment" definition, and the inherent gap between integrated real-time pipelines and offline academic benchmarks.
 
 **Code surface added:** ~200 lines (`AubioTempoTracker` + tests). Plugin `process` now dispatches on `tracking_mode`: AubioTempo branches to `aubio_tempo.process_block` collecting beats; Reactive / Consensus continue to use `beat_tracker.process_block` collecting onsets.

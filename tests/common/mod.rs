@@ -18,7 +18,9 @@
 
 #[cfg(feature = "dataset-tests")]
 pub mod audio;
+pub mod datasets;
 
+use beatpulse::dsp::aubio_pulse_emitter::AubioPulseEmitter;
 use beatpulse::dsp::aubio_tempo_tracker::AubioTempoTracker;
 use beatpulse::dsp::beat_pll::BeatPll;
 use beatpulse::dsp::beat_tracker::BeatTracker;
@@ -92,6 +94,9 @@ fn run_pipeline_inner(
         _ => None,
     };
     let mut pulse_gen = PulseGenerator::new(1);
+    // PPQN=1 here — beats only — for both emitters.
+    let mut aubio_pulse = AubioPulseEmitter::new(1);
+    let aubio_mode = matches!(mode, Mode::AubioTempo);
 
     let mut beat_times: Vec<f64> = Vec::new();
     let mut bpm_log: Vec<f64> = Vec::new();
@@ -125,9 +130,18 @@ fn run_pipeline_inner(
         let mut next_o = 0usize;
         let mut next_b = 0usize;
         for i in 0..block_len as u32 {
+            let mut on_beat_emitted = false;
             while next_b < beat_buf.len() && beat_buf[next_b].0 == i {
                 if let Some(t) = aubio_tempo_opt.as_mut() {
                     t.snap_pll_at_beat(&mut pll, beat_buf[next_b].1);
+                    if aubio_mode && aubio_pulse.on_beat(beat_buf[next_b].1).is_some() {
+                        on_beat_emitted = true;
+                        let abs_sample = beat_buf[next_b].1;
+                        beat_times.push(abs_sample as f64 / sr_f);
+                        if log_bpm {
+                            bpm_log.push(pll.current_bpm());
+                        }
+                    }
                 }
                 next_b += 1;
             }
@@ -138,7 +152,17 @@ fn run_pipeline_inner(
                 next_o += 1;
             }
             pll.advance_one();
-            if let Some(_ev) = pulse_gen.observe_advance(&pll, i) {
+            if aubio_mode {
+                if !on_beat_emitted {
+                    let abs_sample = block_start + i as u64;
+                    if aubio_pulse.tick(abs_sample).is_some() {
+                        beat_times.push(abs_sample as f64 / sr_f);
+                        if log_bpm {
+                            bpm_log.push(pll.current_bpm());
+                        }
+                    }
+                }
+            } else if pulse_gen.observe_advance(&pll, i).is_some() {
                 let abs_sample = block_start + i as u64;
                 beat_times.push(abs_sample as f64 / sr_f);
                 if log_bpm {

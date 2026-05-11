@@ -130,27 +130,35 @@ Last refreshed against `main` after commit `f6b212c`-area work.
 **Real-audio evaluation** (gated on `--features dataset-tests`, run
 locally after fetching datasets — not part of CI):
 
-- **Ballroom 3-way A/B** (`ballroom_compare`, n=698, measured
-  2026-05-11). **AubioTempo (new default, ADR-0027)** F=**0.547**,
-  TA2=**0.744** — in literature range. Consensus F=0.436, TA2=0.428.
-  Reactive F=0.288, TA2=0.285. ΔF(aubio−reactive)=+0.259;
-  ΔF(aubio−consensus)=+0.111. AubioTempo wins outright on **387/698
-  tracks (55 %)**.
-- *Diagnostic* (`tests/ballroom_diagnostic.rs`): on the prior default
-  (Reactive), 71 % of tracks were locked to wrong tempos (not octave-
-  related), median phase offset +11.3 ms (≈ one aubio hop, within
-  ±70 ms tolerance). Threshold sweep on the full corpus
-  (`tests/threshold_sweep.rs`) confirmed onset density isn't the
-  issue — F=0.28–0.32 across all thresholds for SpecFlux/KL/HFC.
-  Hence the move to aubio's `Tempo` object (autocorrelation-based
-  period selection) for the default mode.
-- *Remaining gap*: aubio Tempo standalone scores F=0.576 on Ballroom
-  (`tests/aubio_tempo_experiment.rs`); the integrated AubioTempo
-  scores 0.547 — ~0.03 lower because `PulseGenerator`'s wrap-detection
-  adds a small timing wobble. Tracked as a follow-up if the gap
-  matters. Closing to literature SOTA (~0.75–0.85) likely requires a
-  neural beat tracker (M5) or source separation upstream.
-- GiantSteps Tempo: not measurable (both upstream mirrors dead 2026-05).
+- **Ballroom 3-way A/B** (`ballroom_compare`, n=687, measured
+  2026-05-12 with `mir_eval`-standard scoring: `trim_beats(5.0)` +
+  Sturm-2013 duplicates skipped). **AubioTempo (default)** F=**0.590**,
+  AMLt=0.459, TA2=**0.777** — TA2 in literature range. Consensus
+  F=0.437, AMLt=0.101. Reactive F=0.284, AMLt=0.117.
+  ΔF(aubio−reactive)=+0.306; ΔF(aubio−consensus)=+0.153.
+  AubioTempo wins outright on **394/687 tracks (57 %)**.
+- *Integrated == standalone* now: integrated AubioTempo F=0.590
+  matches standalone aubio Tempo F=0.590
+  (`tests/aubio_tempo_experiment.rs`) — the prior ~0.03
+  PulseGenerator-induced wobble was eliminated by adding
+  `AubioPulseEmitter` (`src/dsp/aubio_pulse_emitter.rs`) which emits
+  beat 0 at the exact aubio sample and linearly interpolates PPQN
+  sub-beats from the inter-beat interval.
+- *Method sweep*: all 7 aubio onset methods through aubio Tempo
+  (`tests/aubio_tempo_experiment.rs::aubio_tempo_ballroom`):
+  SpecFlux=0.590 (winner), SpecDiff=0.584, Complex=0.557, KL=0.554,
+  HFC=0.499, Phase=0.404, MKL=0.391. SpecFlux remains the default;
+  SpecDiff (aubio's own documented default) is a close second.
+- *Remaining gap to literature*: OBTAIN paper (Mostafa 2017) reports
+  F=0.66 for aubio on Ballroom; we land at 0.59. The 0.07 residual is
+  likely annotation-set version (CPJKU vs original Gouyon), aubio
+  version (we pin 0.2 via aubio-rs), and/or sample-rate convention
+  differences. The "F=0.75–0.85" figures earlier referenced were
+  *other* trackers (Bock/madmom), not aubio. Closing to that range
+  would require either a neural beat tracker (M5; deferred) or the
+  Klapuri 2006-style multi-band-accent + comb-filter resonator family
+  (deferred — see ADR-0028 for the future-direction record).
+- GiantSteps Tempo: not measurable (both upstream mirrors dead).
 - SMC_MIREX: not measured (INESC mirror down).
 
 σ of reported BPM is *not* a useful proxy here: reactive has low σ even

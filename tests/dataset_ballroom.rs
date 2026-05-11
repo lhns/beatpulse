@@ -22,11 +22,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use beatpulse::eval::{
-    f_measure, tempo_accuracy_1, tempo_accuracy_2, F_MEASURE_TOL, TEMPO_ACC_TOL,
+    amlt, f_measure, tempo_accuracy_1, tempo_accuracy_2, trim_beats, F_MEASURE_TOL, TEMPO_ACC_TOL,
 };
 use serde::{Deserialize, Serialize};
 
 mod common;
+use common::datasets::{is_ballroom_duplicate, TRIM_BEATS_MIN_T};
 use common::{run_pipeline, Mode};
 
 const TARGET_SR: u32 = 44_100;
@@ -35,6 +36,7 @@ const TARGET_SR: u32 = 44_100;
 struct Aggregate {
     n_tracks: usize,
     f_measure_mean: f64,
+    amlt_mean: f64,
     tempo_acc_1_rate: f64,
     tempo_acc_2_rate: f64,
 }
@@ -138,8 +140,12 @@ fn ballroom_eval() {
         );
     }
 
-    let mut per_track: BTreeMap<String, (f64, bool, bool)> = BTreeMap::new();
+    let mut per_track: BTreeMap<String, (f64, f64, bool, bool)> = BTreeMap::new();
     for wav in &wavs {
+        let stem = wav.file_stem().unwrap().to_string_lossy().into_owned();
+        if is_ballroom_duplicate(&stem) {
+            continue;
+        }
         let beats_path = wav.with_extension("beats");
         if !beats_path.exists() {
             // Try `.txt` or `.annotation` variants.
@@ -159,11 +165,14 @@ fn ballroom_eval() {
         // 2026-05-11 (ADR-0027). The Reactive / Consensus arms are
         // measured side-by-side in `ballroom_compare`.
         let estimated = run_pipeline(&audio, TARGET_SR, Mode::AubioTempo);
-        let f = f_measure(&reference, &estimated, F_MEASURE_TOL);
-        let t1 = tempo_accuracy_1(&reference, &estimated, TEMPO_ACC_TOL);
-        let t2 = tempo_accuracy_2(&reference, &estimated, TEMPO_ACC_TOL);
-        let name = wav.file_stem().unwrap().to_string_lossy().into_owned();
-        per_track.insert(name, (f, t1, t2));
+        // Apply mir_eval-standard trim before scoring (skip first 5 s).
+        let r_t = trim_beats(&reference, TRIM_BEATS_MIN_T);
+        let e_t = trim_beats(&estimated, TRIM_BEATS_MIN_T);
+        let f = f_measure(&r_t, &e_t, F_MEASURE_TOL);
+        let a = amlt(&r_t, &e_t);
+        let t1 = tempo_accuracy_1(&r_t, &e_t, TEMPO_ACC_TOL);
+        let t2 = tempo_accuracy_2(&r_t, &e_t, TEMPO_ACC_TOL);
+        per_track.insert(stem, (f, a, t1, t2));
     }
 
     if per_track.is_empty() {
@@ -172,12 +181,14 @@ fn ballroom_eval() {
 
     // Aggregate
     let n = per_track.len();
-    let f_mean: f64 = per_track.values().map(|(f, _, _)| *f).sum::<f64>() / n as f64;
-    let t1_rate = per_track.values().filter(|(_, t1, _)| *t1).count() as f64 / n as f64;
-    let t2_rate = per_track.values().filter(|(_, _, t2)| *t2).count() as f64 / n as f64;
+    let f_mean: f64 = per_track.values().map(|(f, _, _, _)| *f).sum::<f64>() / n as f64;
+    let amlt_mean: f64 = per_track.values().map(|(_, a, _, _)| *a).sum::<f64>() / n as f64;
+    let t1_rate = per_track.values().filter(|(_, _, t1, _)| *t1).count() as f64 / n as f64;
+    let t2_rate = per_track.values().filter(|(_, _, _, t2)| *t2).count() as f64 / n as f64;
     let agg = Aggregate {
         n_tracks: n,
         f_measure_mean: f_mean,
+        amlt_mean,
         tempo_acc_1_rate: t1_rate,
         tempo_acc_2_rate: t2_rate,
     };
@@ -188,9 +199,9 @@ fn ballroom_eval() {
     let csv_path = out_dir.join("ballroom-latest.csv");
     if let Ok(mut csv) = fs::File::create(&csv_path) {
         use std::io::Write;
-        let _ = writeln!(csv, "track,f_measure,tempo_acc_1,tempo_acc_2");
-        for (name, (f, t1, t2)) in &per_track {
-            let _ = writeln!(csv, "{name},{f:.4},{t1},{t2}");
+        let _ = writeln!(csv, "track,f_measure,amlt,tempo_acc_1,tempo_acc_2");
+        for (name, (f, a, t1, t2)) in &per_track {
+            let _ = writeln!(csv, "{name},{f:.4},{a:.4},{t1},{t2}");
         }
     }
 
@@ -200,8 +211,8 @@ fn ballroom_eval() {
     }
 
     println!(
-        "Ballroom: n={} F={:.3} TA1={:.3} TA2={:.3}",
-        agg.n_tracks, agg.f_measure_mean, agg.tempo_acc_1_rate, agg.tempo_acc_2_rate
+        "Ballroom: n={} F={:.3} AMLt={:.3} TA1={:.3} TA2={:.3}",
+        agg.n_tracks, agg.f_measure_mean, agg.amlt_mean, agg.tempo_acc_1_rate, agg.tempo_acc_2_rate
     );
 
     // Acceptance gate for the default tracking mode (AubioTempo).
@@ -276,11 +287,16 @@ fn ballroom_compare() {
         panic!("no .wav files found under {}", dir.display());
     }
 
-    type PerTrack = (f64, bool, bool, f64, bool, bool, f64, bool, bool);
-    // (f_r, t1_r, t2_r, f_c, t1_c, t2_c, f_a, t1_a, t2_a)
+    // Per-mode (F, AMLt, TA1, TA2) for each track.
+    type ModeRow = (f64, f64, bool, bool);
+    type PerTrack = (ModeRow, ModeRow, ModeRow);
     let mut per_track: BTreeMap<String, PerTrack> = BTreeMap::new();
 
     for wav in &wavs {
+        let stem = wav.file_stem().unwrap().to_string_lossy().into_owned();
+        if is_ballroom_duplicate(&stem) {
+            continue;
+        }
         let beats_path = wav.with_extension("beats");
         let beats_path = if beats_path.exists() {
             beats_path
@@ -308,55 +324,47 @@ fn ballroom_compare() {
         );
         let est_a = run_pipeline(&audio, TARGET_SR, Mode::AubioTempo);
 
-        let f_r = f_measure(&reference, &est_r, F_MEASURE_TOL);
-        let t1_r = tempo_accuracy_1(&reference, &est_r, TEMPO_ACC_TOL);
-        let t2_r = tempo_accuracy_2(&reference, &est_r, TEMPO_ACC_TOL);
-        let f_c = f_measure(&reference, &est_c, F_MEASURE_TOL);
-        let t1_c = tempo_accuracy_1(&reference, &est_c, TEMPO_ACC_TOL);
-        let t2_c = tempo_accuracy_2(&reference, &est_c, TEMPO_ACC_TOL);
-        let f_a = f_measure(&reference, &est_a, F_MEASURE_TOL);
-        let t1_a = tempo_accuracy_1(&reference, &est_a, TEMPO_ACC_TOL);
-        let t2_a = tempo_accuracy_2(&reference, &est_a, TEMPO_ACC_TOL);
+        let r_t = trim_beats(&reference, TRIM_BEATS_MIN_T);
+        let score = |est: &[f64]| -> ModeRow {
+            let e_t = trim_beats(est, TRIM_BEATS_MIN_T);
+            let f = f_measure(&r_t, &e_t, F_MEASURE_TOL);
+            let a = amlt(&r_t, &e_t);
+            let t1 = tempo_accuracy_1(&r_t, &e_t, TEMPO_ACC_TOL);
+            let t2 = tempo_accuracy_2(&r_t, &e_t, TEMPO_ACC_TOL);
+            (f, a, t1, t2)
+        };
+        let row_r = score(&est_r);
+        let row_c = score(&est_c);
+        let row_a = score(&est_a);
 
-        let name = wav.file_stem().unwrap().to_string_lossy().into_owned();
-        per_track.insert(name, (f_r, t1_r, t2_r, f_c, t1_c, t2_c, f_a, t1_a, t2_a));
+        per_track.insert(stem, (row_r, row_c, row_a));
     }
     if per_track.is_empty() {
         panic!("no tracks were successfully evaluated");
     }
 
     let n = per_track.len();
-    let agg_r = Aggregate {
+    let avg = |pick: fn(&PerTrack) -> &ModeRow| Aggregate {
         n_tracks: n,
-        f_measure_mean: per_track.values().map(|t| t.0).sum::<f64>() / n as f64,
-        tempo_acc_1_rate: per_track.values().filter(|t| t.1).count() as f64 / n as f64,
-        tempo_acc_2_rate: per_track.values().filter(|t| t.2).count() as f64 / n as f64,
+        f_measure_mean: per_track.values().map(|t| pick(t).0).sum::<f64>() / n as f64,
+        amlt_mean: per_track.values().map(|t| pick(t).1).sum::<f64>() / n as f64,
+        tempo_acc_1_rate: per_track.values().filter(|t| pick(t).2).count() as f64 / n as f64,
+        tempo_acc_2_rate: per_track.values().filter(|t| pick(t).3).count() as f64 / n as f64,
     };
-    let agg_c = Aggregate {
-        n_tracks: n,
-        f_measure_mean: per_track.values().map(|t| t.3).sum::<f64>() / n as f64,
-        tempo_acc_1_rate: per_track.values().filter(|t| t.4).count() as f64 / n as f64,
-        tempo_acc_2_rate: per_track.values().filter(|t| t.5).count() as f64 / n as f64,
-    };
-    let agg_a = Aggregate {
-        n_tracks: n,
-        f_measure_mean: per_track.values().map(|t| t.6).sum::<f64>() / n as f64,
-        tempo_acc_1_rate: per_track.values().filter(|t| t.7).count() as f64 / n as f64,
-        tempo_acc_2_rate: per_track.values().filter(|t| t.8).count() as f64 / n as f64,
-    };
+    let agg_r = avg(|t| &t.0);
+    let agg_c = avg(|t| &t.1);
+    let agg_a = avg(|t| &t.2);
     let mut n_better_c = 0;
     let mut n_better_r = 0;
     let mut n_aubio_best = 0;
     for t in per_track.values() {
-        // c vs r
-        let d = t.3 - t.0;
+        let d = t.1 .0 - t.0 .0; // consensus.F vs reactive.F
         if d > 0.005 {
             n_better_c += 1;
         } else if d < -0.005 {
             n_better_r += 1;
         }
-        // a wins among the three?
-        if t.6 >= t.0 && t.6 >= t.3 {
+        if t.2 .0 >= t.0 .0 && t.2 .0 >= t.1 .0 {
             n_aubio_best += 1;
         }
     }
@@ -378,12 +386,26 @@ fn ballroom_compare() {
     let csv_path = out_dir.join("ballroom-compare.csv");
     if let Ok(mut csv) = fs::File::create(&csv_path) {
         use std::io::Write;
-        let _ = writeln!(csv, "track,r_F,r_TA1,r_TA2,c_F,c_TA1,c_TA2,a_F,a_TA1,a_TA2");
+        let _ = writeln!(
+            csv,
+            "track,r_F,r_AMLt,r_TA1,r_TA2,c_F,c_AMLt,c_TA1,c_TA2,a_F,a_AMLt,a_TA1,a_TA2"
+        );
         for (name, t) in &per_track {
             let _ = writeln!(
                 csv,
-                "{name},{:.4},{},{},{:.4},{},{},{:.4},{},{}",
-                t.0, t.1, t.2, t.3, t.4, t.5, t.6, t.7, t.8
+                "{name},{:.4},{:.4},{},{},{:.4},{:.4},{},{},{:.4},{:.4},{},{}",
+                t.0 .0,
+                t.0 .1,
+                t.0 .2,
+                t.0 .3,
+                t.1 .0,
+                t.1 .1,
+                t.1 .2,
+                t.1 .3,
+                t.2 .0,
+                t.2 .1,
+                t.2 .2,
+                t.2 .3,
             );
         }
     }
@@ -393,14 +415,16 @@ fn ballroom_compare() {
     }
 
     println!(
-        "Ballroom A/B: n={n} | reactive F={:.3} TA2={:.3} | consensus F={:.3} TA2={:.3} | \
-         aubio_tempo F={:.3} TA2={:.3} | ΔF(c-r)={:+.3} ΔF(a-r)={:+.3} ΔF(a-c)={:+.3} | \
+        "Ballroom A/B: n={n} | reactive F={:.3} AMLt={:.3} | consensus F={:.3} AMLt={:.3} | \
+         aubio_tempo F={:.3} AMLt={:.3} TA2={:.3} | \
+         ΔF(c-r)={:+.3} ΔF(a-r)={:+.3} ΔF(a-c)={:+.3} | \
          (n_consensus_better_vs_reactive={}, n_reactive_better_vs_consensus={}, n_aubio_best_overall={})",
         agg_r.f_measure_mean,
-        agg_r.tempo_acc_2_rate,
+        agg_r.amlt_mean,
         agg_c.f_measure_mean,
-        agg_c.tempo_acc_2_rate,
+        agg_c.amlt_mean,
         agg_a.f_measure_mean,
+        agg_a.amlt_mean,
         agg_a.tempo_acc_2_rate,
         comp.delta_f_consensus_vs_reactive,
         comp.delta_f_aubio_vs_reactive,

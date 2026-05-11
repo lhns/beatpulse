@@ -25,6 +25,7 @@ pub mod params;
 pub mod shared;
 pub mod ui;
 
+use crate::dsp::aubio_pulse_emitter::AubioPulseEmitter;
 use crate::dsp::aubio_tempo_tracker::AubioTempoTracker;
 use crate::dsp::beat_pll::BeatPll;
 use crate::dsp::beat_tracker::BeatTracker;
@@ -45,6 +46,7 @@ struct DspState {
     pll: BeatPll,
     consensus: ConsensusTracker,
     aubio_tempo: AubioTempoTracker,
+    aubio_pulse: AubioPulseEmitter,
     pulse_gen: PulseGenerator,
     midi_formatter: MidiFormatter,
     link: LinkPublisher,
@@ -167,6 +169,7 @@ impl Plugin for Beatpulse {
                     return false;
                 }
             };
+        let aubio_pulse = AubioPulseEmitter::new(self.params.pulse_rate.value().as_u32());
 
         // Generous capacity: one MIDI event per sample at PPQN=24 is wildly
         // beyond reality, but bounded. Reserve up-front so process never
@@ -180,6 +183,7 @@ impl Plugin for Beatpulse {
             pll,
             consensus,
             aubio_tempo,
+            aubio_pulse,
             pulse_gen,
             midi_formatter,
             link,
@@ -221,6 +225,7 @@ impl Plugin for Beatpulse {
             dsp.pll.reset();
             dsp.consensus.reset();
             dsp.aubio_tempo.reset();
+            dsp.aubio_pulse.reset();
             dsp.pulse_gen.reset();
             dsp.midi_formatter.reset();
         }
@@ -332,20 +337,28 @@ impl Plugin for Beatpulse {
                     .try_snap_pll(&mut dsp.pll, block_start, n_samples as u64);
             }
 
+            let aubio_mode = matches!(tracking_mode, TrackingMode::AubioTempo);
             let mut next_onset = 0usize;
             let mut next_beat = 0usize;
             for i in 0..n_samples as u32 {
-                // Apply any aubio-Tempo beats landing at this sample
-                // (snap PLL period+phase from the beat).
+                // For AubioTempo: an on-beat pulse fires from the
+                // dedicated `AubioPulseEmitter` directly at the aubio
+                // beat sample (no PLL wrap-detection wobble — see
+                // ADR-0027 update). The PLL snap still happens so the
+                // BPM display + Link publishing reflect the locked
+                // tempo.
+                let mut on_beat_pulse: Option<crate::dsp::pulse_generator::PulseEvent> = None;
                 while next_beat < n_beats && beats[next_beat].0 == i {
-                    if matches!(tracking_mode, TrackingMode::AubioTempo) {
+                    if aubio_mode {
                         dsp.aubio_tempo
                             .snap_pll_at_beat(&mut dsp.pll, beats[next_beat].1);
+                        if let Some(mut ev) = dsp.aubio_pulse.on_beat(beats[next_beat].1) {
+                            ev.sample_offset = i;
+                            on_beat_pulse = Some(ev);
+                        }
                     }
                     next_beat += 1;
                 }
-                // Apply any onsets landing at this sample, BEFORE advancing.
-                // Only the Reactive path feeds onsets to the PLL directly.
                 while next_onset < n_onsets && onsets[next_onset].0 == i {
                     if matches!(tracking_mode, TrackingMode::Reactive) {
                         dsp.pll.on_onset(onsets[next_onset].1 as f64);
@@ -354,9 +367,18 @@ impl Plugin for Beatpulse {
                 }
                 // Advance PLL one sample and check for a pulse.
                 dsp.pll.advance_one();
-                if let Some(mut ev) = dsp.pulse_gen.observe_advance(&dsp.pll, i) {
-                    // Drive the UI flash indicators. Independent of output
-                    // gating — the LEDs reflect detection.
+                let pulse = if aubio_mode {
+                    on_beat_pulse.or_else(|| {
+                        let abs = block_start + i as u64;
+                        dsp.aubio_pulse.tick(abs).map(|mut ev| {
+                            ev.sample_offset = i;
+                            ev
+                        })
+                    })
+                } else {
+                    dsp.pulse_gen.observe_advance(&dsp.pll, i)
+                };
+                if let Some(mut ev) = pulse {
                     shared.bump_pulse();
                     if ev.is_beat_boundary {
                         shared.bump_beat();
@@ -458,6 +480,8 @@ fn update_dsp_from_params(dsp: &mut DspState, params: &BeatpulseParams) {
     dsp.pll
         .set_alphas(params.alpha_period(), params.alpha_phase());
     dsp.pulse_gen
+        .set_pulse_rate(params.pulse_rate.value().as_u32());
+    dsp.aubio_pulse
         .set_pulse_rate(params.pulse_rate.value().as_u32());
     dsp.beat_tracker.set_threshold(params.aubio_threshold());
     dsp.aubio_tempo.set_threshold(params.aubio_threshold());
