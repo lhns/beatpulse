@@ -45,11 +45,14 @@ impl Default for InferenceWeights {
             w_measure_2: 0.5,
             w_measure_3: 0.3,
             w_measure_4: 0.2,
-            // σ=0.35 in log-BPM space → 1σ covers ≈ 85-170 BPM, 2σ
-            // covers ≈ 60-240. Matches the practical Ballroom range
-            // and aggressively suppresses fringe-period resonators
-            // that get inflated by per-impulse scaling biases.
-            prior_sigma: 0.35,
+            // σ=0.5 in log-BPM space → 1σ covers ≈ 73-200 BPM, 2σ
+            // covers ≈ 44-330. Wider than the original σ=0.35 so
+            // genuine slow waltzes (~80 BPM) and fast jives
+            // (~200 BPM) aren't suppressed; the joint sub/super-
+            // harmonic evidence (now usable for all tactus τ thanks
+            // to the extended period range) is the primary octave
+            // discriminator.
+            prior_sigma: 0.5,
             prior_centre_bpm: 120.0,
         }
     }
@@ -221,6 +224,80 @@ mod tests {
         assert!(
             ok,
             "expected τ={target} or octave, got τ={tau} ({bpm:.1} BPM)"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Phase A2 — period-range coverage tests added during the Klapuri
+    // debugging pass (plan §A2). These pin down the missing-sub-
+    // harmonic-evidence bug.
+    // ------------------------------------------------------------------
+
+    use crate::dsp::klapuri::resonators::default_period_range;
+
+    /// For every tactus candidate τ in `default_period_range`, τ/2
+    /// must also be in the range — otherwise the joint-inference
+    /// sub-harmonic lookup silently returns 0 and starves the score
+    /// of evidence. Currently FAILS for every τ ≤ 94.
+    #[test]
+    fn sub_harmonic_in_range_for_every_tactus_candidate() {
+        let r = default_period_range(44_100, 256);
+        let mut missing: Vec<usize> = Vec::new();
+        for &tau in &r {
+            // Only check candidates that are "tactus-shaped" (within
+            // the 60-220 BPM band). The bank may also include
+            // sub-harmonic-only τ values; those don't need their own
+            // τ/2 to exist.
+            let bpm = 60.0 * (44_100.0 / 256.0) / tau as f32;
+            if (60.0..=220.0).contains(&bpm) {
+                let sub = tau / 2;
+                if !r.contains(&sub) {
+                    missing.push(tau);
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "tactus candidates with τ/2 NOT in range: {missing:?} (max BPM = {})",
+            60.0 * (44_100.0 / 256.0) / *r.first().unwrap() as f32
+        );
+    }
+
+    /// Drive the bank with a clean 120 BPM impulse train (τ=86 at
+    /// 172 Hz OSS). Inference should pick τ=86, NOT τ=43 (the
+    /// sub-harmonic). The sub-harmonic lookup MUST find τ/2=43 in
+    /// the bank for this to work robustly — without that evidence
+    /// the test passes only because of the BPM prior, masking the
+    /// bug.
+    #[test]
+    fn inference_uses_subharmonic_evidence_at_120bpm() {
+        let oss_rate = 44_100.0 / 256.0;
+        // Use the production default_period_range so this test
+        // exercises the realistic bank.
+        let periods = default_period_range(44_100, 256);
+        let mut bank = ResonatorBank::new(&periods);
+        let target = 86usize;
+        for i in 0..4000 {
+            let accent = if i % target == 0 {
+                [1.0_f32, 0.0, 0.0, 0.0]
+            } else {
+                [0.0_f32; N_BANDS]
+            };
+            bank.tick(accent);
+        }
+        // Verify the sub-harmonic exists in the range.
+        let sub = target / 2;
+        assert!(
+            periods.contains(&sub),
+            "τ/2={sub} not in default_period_range — sub-harmonic evidence \
+             cannot be looked up. Extend the lower bound."
+        );
+        // Now run inference and check the winner.
+        let mut inf = PeriodInference::new(oss_rate);
+        let (_, tau, bpm) = inf.select(&mut bank).unwrap();
+        assert!(
+            (tau as i64 - target as i64).abs() <= 1,
+            "expected τ={target} (≈ 120 BPM), got τ={tau} ({bpm:.1} BPM)"
         );
     }
 }

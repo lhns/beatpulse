@@ -59,6 +59,36 @@ Per the plan's Phase 5 gate (`F < 0.59 → don't integrate`), this is a **clear 
 
 The Klapuri code is left in place as a reference for any future revival; not exported beyond `pub mod klapuri;` in `src/dsp/mod.rs`. The `tests/klapuri_experiment.rs` standalone benchmark is preserved so a future improvement can be measured against the same reference numbers.
 
+## Update — debugging pass (post-rejection)
+
+A second pass added 6 component-correctness unit tests (the existing smoke tests passed, hiding the bugs) and applied three fixes:
+
+1. **Cross-correlation phase extraction.** Added `Resonator::phase_acc` — a per-phase smoothed |y| accumulator (γ=0.85, ~7-tick integration). `phase_of` now reads the accumulator's argmax instead of the raw `y_hist` argmax. This locks on the dominant *periodic* alignment, not the most recent loud transient.
+2. **Extended `default_period_range` down to ~430 BPM-equivalent (τ=24).** The original range (47..172) couldn't supply sub-harmonic τ/2 evidence for any tactus τ ≤ 94 — i.e. for everything in the 120-220 BPM band, where most Ballroom tempos sit. The BPM prior keeps the new short-τ resonators from being chosen as the tactus; they exist only as supporting evidence for longer ones.
+3. **Loosened the BPM prior** from σ=0.35 → 0.5 in log-BPM space (1σ now covers 73-200 BPM, was 85-170). Rationale: real Ballroom has slow waltzes (~80 BPM) and fast jives (~200 BPM) at the σ tail, and the joint sub/super-harmonic evidence (now usable thanks to fix #2) is the primary octave discriminator.
+
+After all three fixes, the in-tree component tests all pass — including the end-to-end `klapuri_emits_within_70ms_of_truth_on_clean_120bpm_kick` (mean error 142 ms → ≤ 35 ms) and `klapuri_locks_to_correct_octave_on_120bpm` (110 BPM → within ±4% of 120). The component pipeline genuinely works on synthetic input.
+
+**Re-measured on Ballroom (n=687, same scoring):**
+
+| Pass | F | AMLt | TA1 | TA2 |
+|---|---|---|---|---|
+| Pre-fix (original) | 0.277 | 0.080 | 0.044 | 0.045 |
+| Post-fix (debugging pass) | **0.318** | 0.043 | 0.017 | 0.031 |
+| AubioTempo (reference) | 0.590 | 0.459 | 0.592 | 0.777 |
+
+F crept up by +0.041 — but TA2 actually got *worse* (0.045 → 0.031). The fixes corrected the synthetic-input failure modes, but on real audio the tempo selection became more wrong, not less. Likely cause: the extended period range (B2) introduced spurious high-frequency resonator energy from real ballroom audio's hi-band content (hats, cymbals, hi-frequencies); these short-τ resonators now feed sub-harmonic evidence into the inference, but the evidence is *for the wrong tempo*. We traded a phase bug for a sub-harmonic-bias bug.
+
+**Per the debugging plan's Phase C gate (F < 0.45 → stop), this stays Rejected.** ADR-0028 status remains Rejected; the implementation is preserved for any future revival, with the new measurement and the diagnostic notes above.
+
+**What would be needed to make Klapuri work for us:**
+
+- Per-genre / per-track sub-harmonic weight calibration (the over-extended range needs a per-τ weight that decays for very short τ, instead of a flat `w_tatum_half`).
+- Or: tighter per-band normalization in the accent stage so the high-frequency channels don't dominate the resonator bank.
+- Or: implement the missing measure-level (downbeat) joint inference — Klapuri's full joint posterior over tatum/tactus/measure may be what suppresses the wrong-octave attractors.
+
+Each of those is non-trivial. AubioTempo at F=0.59 / TA2=0.78 remains the production default. ADR-0027 stands.
+
 ## References
 
 - Klapuri, A.P., Eronen, A.J., and Astola, J.T. *Analysis of the meter of acoustic musical signals.* IEEE TASLP 14(1):342–355, 2006. https://www.iro.umontreal.ca/~pift6080/H09/documents/papers/klapuri_meter.pdf

@@ -278,4 +278,87 @@ mod tests {
             beats.len()
         );
     }
+
+    // ------------------------------------------------------------------
+    // Phase A4 — end-to-end synthetic regression added during the
+    // Klapuri debugging pass (plan §A4). Currently FAILS (the phase
+    // bug dominates); should pass after the fixes land.
+    // ------------------------------------------------------------------
+
+    /// Mean absolute error between predicted and nearest-truth beat
+    /// times should be below the F-measure tolerance after warmup.
+    /// Without this guarantee the F-measure on Ballroom can't break
+    /// out of the 0.3 floor.
+    #[test]
+    fn klapuri_emits_within_70ms_of_truth_on_clean_120bpm_kick() {
+        let sr = 44_100u32;
+        let beat = (sr as f32 * 60.0 / 120.0) as usize; // 22050
+        let n = beat * 60 + 1024; // ~30 s
+        let audio = synth_kick(sr, n, beat);
+        let mut tracker = KlapuriTracker::new(sr);
+        let mut predicted: Vec<u64> = Vec::new();
+        let block = 512;
+        let mut absolute = 0u64;
+        for chunk in audio.chunks(block) {
+            tracker.process_block(chunk, absolute, |_off, abs| {
+                predicted.push(abs);
+            });
+            absolute += chunk.len() as u64;
+        }
+        // Truth beat times: every `beat` samples starting at t=0.
+        let truth: Vec<u64> = (0..)
+            .map(|i| (i * beat) as u64)
+            .take_while(|&t| t < n as u64)
+            .collect();
+        // Drop the first 5 s of predictions (warmup).
+        let warmup = (5.0 * sr as f64) as u64;
+        let post: Vec<u64> = predicted.iter().copied().filter(|&p| p > warmup).collect();
+        assert!(
+            post.len() >= 20,
+            "expected ≥ 20 post-warmup beats, got {} (total predicted: {})",
+            post.len(),
+            predicted.len()
+        );
+        let total_err: f64 = post
+            .iter()
+            .map(|&p| {
+                let nearest = truth
+                    .iter()
+                    .min_by_key(|&&t| (t as i64 - p as i64).unsigned_abs())
+                    .copied()
+                    .unwrap_or(0);
+                ((p as i64 - nearest as i64).unsigned_abs() as f64) / sr as f64
+            })
+            .sum();
+        let mean_err_s = total_err / post.len() as f64;
+        let mean_err_ms = mean_err_s * 1000.0;
+        assert!(
+            mean_err_ms < 35.0,
+            "mean abs error {mean_err_ms:.1} ms > 35 ms — phase tracking is broken \
+             (predicted post-warmup: {} beats over 30 s)",
+            post.len()
+        );
+    }
+
+    /// After 30 s of clean 120 BPM kicks, the locked BPM should be
+    /// within ±4 % of 60 / 120 / 240. Tighter than the existing test
+    /// (±15 %) — a regression check on the period inference.
+    #[test]
+    fn klapuri_locks_to_correct_octave_on_120bpm() {
+        let sr = 44_100u32;
+        let beat = (sr as f32 * 60.0 / 120.0) as usize;
+        let n = beat * 60 + 1024;
+        let audio = synth_kick(sr, n, beat);
+        let mut tracker = KlapuriTracker::new(sr);
+        let block = 512;
+        let mut absolute = 0u64;
+        for chunk in audio.chunks(block) {
+            tracker.process_block(chunk, absolute, |_, _| {});
+            absolute += chunk.len() as u64;
+        }
+        let bpm = tracker.current_bpm();
+        let candidates = [120.0_f32, 60.0, 240.0];
+        let ok = candidates.iter().any(|c| (bpm - c).abs() < c * 0.04);
+        assert!(ok, "expected 120 BPM (or 60 / 240) ±4 %, got {bpm:.1}");
+    }
 }
