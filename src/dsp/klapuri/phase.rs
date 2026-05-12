@@ -10,6 +10,7 @@
 //! Subsequent beats are at multiples of `τ · hop_size`.
 
 use crate::dsp::klapuri::accent::{MultiBandAccent, FFT_SIZE, HOP_SIZE, N_BANDS};
+use crate::dsp::klapuri::downbeat::DownbeatTracker;
 use crate::dsp::klapuri::period_inference::PeriodInference;
 use crate::dsp::klapuri::resonators::{default_period_range, ResonatorBank};
 
@@ -35,6 +36,16 @@ pub struct KlapuriTracker {
     accent: MultiBandAccent,
     bank: ResonatorBank,
     inference: PeriodInference,
+
+    /// Downbeat tracker — observes the low-band accent at each
+    /// emitted beat moment to identify the downbeat (beat-1-of-
+    /// measure) phase. Independent of the joint posterior; runs at
+    /// per-beat rather than per-inference granularity.
+    downbeat: DownbeatTracker,
+    /// Most-recent low-band accent value (band 0). Read by the
+    /// downbeat tracker when a beat fires. Updated each accent
+    /// frame.
+    last_low_band_accent: f32,
 
     /// Per-band leaky-integrator running mean of accent, subtracted
     /// from each accent frame before feeding the bank. Removes the
@@ -92,6 +103,7 @@ impl KlapuriTracker {
         let periods = default_period_range(sr, hop);
         let bank = ResonatorBank::new(&periods, sr as f32 / hop as f32);
         let inference = PeriodInference::new(sr as f32 / hop as f32);
+        let downbeat = DownbeatTracker::new();
         Self {
             sr,
             hop,
@@ -109,6 +121,8 @@ impl KlapuriTracker {
             tau_history: [0; TAU_HISTORY],
             tau_history_count: 0,
             tau_history_pos: 0,
+            downbeat,
+            last_low_band_accent: 0.0,
         }
     }
 
@@ -136,10 +150,26 @@ impl KlapuriTracker {
         60.0 * self.sr as f32 / self.period_audio as f32
     }
 
+    /// Most-likely downbeat phase (beat-1-of-measure offset within a
+    /// k-beat measure) for the given measure size. `None` until the
+    /// downbeat tracker has accumulated enough beats. Per Klapuri
+    /// 2006 §V — currently advisory; not yet wired into the joint
+    /// posterior.
+    pub fn downbeat_position(&self, k_measure: u8) -> Option<usize> {
+        self.downbeat.downbeat_position(k_measure)
+    }
+
+    /// Confidence (0..1) of the downbeat estimate at the given
+    /// `k_measure`. Higher = more concentrated per-position energy.
+    pub fn downbeat_confidence(&self, k_measure: u8) -> f32 {
+        self.downbeat.confidence(k_measure)
+    }
+
     pub fn reset(&mut self) {
         self.accent.reset();
         self.bank.reset();
         self.inference.reset();
+        self.downbeat.reset();
         self.oss_frames = 0;
         self.tau_oss = 0;
         self.period_audio = 0.0;
@@ -149,6 +179,7 @@ impl KlapuriTracker {
         self.tau_history = [0; TAU_HISTORY];
         self.tau_history_count = 0;
         self.tau_history_pos = 0;
+        self.last_low_band_accent = 0.0;
     }
 
     /// Process one host block of mono audio. `block_start_abs` is the
@@ -216,6 +247,10 @@ impl KlapuriTracker {
                 if abs_at_sample_f >= nb {
                     let nb_u = nb.round() as u64;
                     let off = (nb_u.saturating_sub(block_start_abs).min(u32::MAX as u64)) as u32;
+                    // Feed the downbeat tracker with the most recent
+                    // low-band accent value — kicks dominate the low
+                    // band, downbeats usually have the loudest kick.
+                    self.downbeat.observe_beat(self.last_low_band_accent);
                     on_beat(off, nb_u);
                     // Schedule the next beat.
                     if *period_audio_state > 0.0 {
@@ -237,6 +272,9 @@ impl KlapuriTracker {
                 ACCENT_DC_ALPHA * self.accent_dc[b] + (1.0 - ACCENT_DC_ALPHA) * frame_acc[b];
             zero_mean[b] = frame_acc[b] - self.accent_dc[b];
         }
+        // Cache the low-band accent for the downbeat tracker (consumed
+        // when a beat fires within this hop, below).
+        self.last_low_band_accent = frame_acc[0];
         bank.tick(zero_mean);
         *oss_frames += 1;
         // Periodically re-run inference. Period inference sets
@@ -303,6 +341,7 @@ impl KlapuriTracker {
             if abs_at_sample_f >= nb {
                 let nb_u = nb.round() as u64;
                 let off = (nb_u.saturating_sub(block_start_abs).min(u32::MAX as u64)) as u32;
+                self.downbeat.observe_beat(self.last_low_band_accent);
                 on_beat(off, nb_u);
                 if *period_audio_state > 0.0 {
                     *next_beat_abs = Some(nb + *period_audio_state);
