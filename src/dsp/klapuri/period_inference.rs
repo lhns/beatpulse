@@ -17,6 +17,7 @@
 //! The winning τ is the tactus (one beat). Phase comes from the
 //! winning resonator's delay-line state — see [`super::phase`].
 
+use crate::dsp::klapuri::joint_posterior::{JointStateSpace, JointWeights};
 use crate::dsp::klapuri::resonators::ResonatorBank;
 
 /// Configurable weights for the period-score combination. Defaults
@@ -57,8 +58,15 @@ pub struct PeriodInference {
     pub weights: InferenceWeights,
     /// OSS rate (samples/sec) used to derive BPM from period.
     oss_rate: f32,
-    /// Per-candidate τ score scratch — `raw_evidence × bpm_prior`.
+    /// Per-tactus marginal log-posterior (log-sum-exp over joint
+    /// states sharing that tactus). Length = `bank.periods().len()`.
     score_buf: Vec<f32>,
+    /// Per-state log-likelihood scratch — sized to the joint state
+    /// space at first `select()` call.
+    log_lik_buf: Vec<f32>,
+    /// Joint state space over (tactus, k_tatum, k_measure), built
+    /// lazily from the bank's period range.
+    state_space: Option<JointStateSpace>,
 }
 
 impl PeriodInference {
@@ -67,13 +75,32 @@ impl PeriodInference {
             weights: InferenceWeights::default(),
             oss_rate,
             score_buf: Vec::new(),
+            log_lik_buf: Vec::new(),
+            state_space: None,
         }
     }
 
-    /// Reset all internal state. Currently a no-op — `select()`
-    /// recomputes everything from the bank state each cycle. Kept as
-    /// a stable hook for future temporal-filter activation.
-    pub fn reset(&mut self) {}
+    /// Reset all internal state. Drops the cached state space so the
+    /// next `select()` call rebuilds it (cheap, ~750 states).
+    pub fn reset(&mut self) {
+        self.state_space = None;
+    }
+
+    fn ensure_state_space(&mut self, bank_periods: &[usize]) {
+        let needs_rebuild = match &self.state_space {
+            None => true,
+            Some(ss) => {
+                let (lo, hi) = ss.tactus_range();
+                lo >= bank_periods.len() || hi > bank_periods.len()
+            }
+        };
+        if needs_rebuild {
+            let mut jw = JointWeights::default();
+            jw.prior_centre_bpm = self.weights.prior_centre_bpm;
+            jw.prior_sigma = self.weights.prior_sigma;
+            self.state_space = Some(JointStateSpace::new(bank_periods, self.oss_rate, jw));
+        }
+    }
 
     /// Score every candidate τ in `bank.periods()` and return the
     /// `(period_index, period_samples, period_frac, bpm)` of the
@@ -88,55 +115,52 @@ impl PeriodInference {
             return None;
         }
         let n = periods.len();
-        self.score_buf.resize(n, 0.0);
-
-        let w = &self.weights;
-        let centre_log = w.prior_centre_bpm.ln();
-        let sigma = w.prior_sigma.max(1e-6);
-        let lookup = |target: usize| -> f32 {
-            match periods.binary_search(&target) {
-                Ok(idx) => energies[idx],
-                Err(_) => 0.0,
-            }
-        };
-
-        for (i, &tau) in periods.iter().enumerate() {
-            let e_t = energies[i];
-            let e_th2 = lookup(tau / 2);
-            let e_th3 = if tau >= 3 { lookup(tau / 3) } else { 0.0 };
-            let e_m2 = lookup(tau * 2);
-            let e_m3 = lookup(tau * 3);
-            let e_m4 = lookup(tau * 4);
-            let raw = w.w_tactus * e_t
-                + w.w_tatum_half * e_th2
-                + w.w_tatum_third * e_th3
-                + w.w_measure_2 * e_m2
-                + w.w_measure_3 * e_m3
-                + w.w_measure_4 * e_m4;
-            let bpm = 60.0 * self.oss_rate / tau as f32;
-            let z = (bpm.ln() - centre_log) / sigma;
-            let prior = (-0.5 * z * z).exp();
-            self.score_buf[i] = raw * prior;
+        self.ensure_state_space(&periods);
+        let ss = self.state_space.as_ref()?;
+        if ss.n_states() == 0 {
+            return None;
         }
 
-        let (best_i, _) = self
+        // Phase B: joint posterior over (tactus, k_tatum, k_measure).
+        // Compute per-state log-likelihood from the bank's
+        // post-DC-removal normalised energies, then log-sum-exp over
+        // (k_tatum, k_measure) per tactus to get a per-tactus score.
+        self.log_lik_buf.resize(ss.n_states(), 0.0);
+        ss.log_likelihood(&energies, &mut self.log_lik_buf);
+
+        self.score_buf.resize(n, f32::NEG_INFINITY);
+        ss.marginalise_per_tactus(&self.log_lik_buf, n, &mut self.score_buf);
+
+        // Argmax in log-space.
+        let (best_i, &best_score) = self
             .score_buf
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())?;
+        if !best_score.is_finite() {
+            return None;
+        }
         let tau = periods[best_i];
 
+        // Parabolic peak interpolation in log-score space. Same
+        // formula as the linear case — the score is concave around
+        // the peak in either representation; log-domain just makes
+        // the dynamic range tractable for log-sum-exp.
         let tau_frac = if best_i > 0 && best_i + 1 < n {
             let s_lo = self.score_buf[best_i - 1];
             let s_mid = self.score_buf[best_i];
             let s_hi = self.score_buf[best_i + 1];
-            let denom = s_lo - 2.0 * s_mid + s_hi;
-            let offset = if denom.abs() > 1e-12 {
-                (0.5 * (s_lo - s_hi) / denom).clamp(-0.5, 0.5)
+            if s_lo.is_finite() && s_hi.is_finite() {
+                let denom = s_lo - 2.0 * s_mid + s_hi;
+                let offset = if denom.abs() > 1e-12 {
+                    (0.5 * (s_lo - s_hi) / denom).clamp(-0.5, 0.5)
+                } else {
+                    0.0
+                };
+                tau as f32 + offset
             } else {
-                0.0
-            };
-            tau as f32 + offset
+                tau as f32
+            }
         } else {
             tau as f32
         };
