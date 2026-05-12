@@ -76,23 +76,23 @@ pub struct JointWeights {
 impl Default for JointWeights {
     fn default() -> Self {
         Self {
-            alpha_t: 1.0,
-            alpha_h: 0.4,
-            alpha_m: 0.6,
+            alpha_t: 1.5,
+            alpha_h: 0.2,
+            alpha_m: 0.4,
 
             prior_binary_tatum: 0.7,
-            prior_measure_2: 0.15,
-            prior_measure_3: 0.30,
-            prior_measure_4: 0.55,
+            prior_measure_2: 0.6,
+            prior_measure_3: 0.25,
+            prior_measure_4: 0.15,
 
             prior_centre_bpm: 120.0,
             prior_sigma: 0.8,
 
-            p_stay: 0.85,
-            p_octave: 0.03,
-            p_meta: 0.02,
+            p_stay: 0.92,
+            p_octave: 0.01,
+            p_meta: 0.01,
 
-            log_prior_missing_level: -3.0,
+            log_prior_missing_level: 0.0,
         }
     }
 }
