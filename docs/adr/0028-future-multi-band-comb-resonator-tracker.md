@@ -340,7 +340,73 @@ For context, ISMIR 2004 contest overall (across multiple corpora) — Klapuri wo
 2. **Waveclock's commercial product is closer to paper-Klapuri than our implementation is** — they likely have the joint posterior + DP continuity that closes the 12.5-point gap we observe.
 3. **The fact that aubio scores well on Ballroom is partly Ballroom-specific.** Davies-derived annotations + steady tempo + Western-pop bias all favour autocorrelation. The same trackers reverse rankings on harder corpora (SMC, GiantSteps).
 
-**Bottom line:** there is no further per-component bug to find by re-auditing accent / bank / linear inference. The 12.5-point gap is the joint-posterior + DP-continuity component (§IV-C of the paper) that we explicitly defer. Closing it is a ~400–600 LOC implementation effort to replace `period_inference.rs`'s linear-sum scoring with a probabilistic joint model over (tatum, tactus, measure) and a Viterbi-style temporal smoother. That's the only known lever left for the Klapuri architecture. Pass 11 verdict stands: bank-level fixes are exhausted; further gains need algorithm completeness.
+**Bottom line as of pass 11:** the 12.5-point gap is the joint-posterior + DP-continuity component (§IV-C). Pass 12 added the joint-posterior module as a research artifact. Pass 13 wired it into `select()` with substantial improvements. Pass 14 audited the paper for missing details and fixed two more (W=0.8, extended bank). Continued below in chronological order.
+
+## Consolidated results history (Ballroom n=687, mir_eval)
+
+All numbers are mean F-measure (±70 ms tolerance), AMLt (allowed metrical level — total beats), TA1 (strict tempo within ±4 %), TA2 (octave-tolerant) on the 687-track Ballroom subset (after dropping 11 known duplicates). Aubio reference: F=0.590, AMLt=0.459, TA1=0.592, TA2=0.777. Paper-Klapuri (Gouyon et al. 2006 reproduction on Ballroom): TA1=0.632, TA2=0.910.
+
+| Pass | Commit | Branch | F | AMLt | TA1 | TA2 | Change |
+|---|---|---|---|---|---|---|---|
+| Pass 5 (re-anchor) | (in `0b9cd77`) | `main` | 0.402 | 0.118 | 0.237 | 0.252 | Per-inference phase re-anchor + smoothing |
+| Pass 6 (DC removal) | (in `0b9cd77`) | `main` | 0.584 | 0.315 | 0.456 | 0.662 | Per-band DC removal at bank input |
+| Pass 7 (relaxed prior) | (in `0b9cd77`) | `main` | 0.630 | 0.367 | 0.485 | 0.755 | σ 0.5→0.8, w_measure_2 0.5→0.7 |
+| Pass 8 (τ-median) | (in `0b9cd77`) | `main` | 0.633 | 0.408 | 0.491 | 0.766 | Median of last 5 inference winners |
+| Pass 9 (slow energy_decay) | (in `0b9cd77`) | `main` | 0.633 | 0.408 | 0.491 | 0.766 | Bank `energy_decay` 0.99→0.998 |
+| Pass 10 (no improvement) | (in `0b9cd77`) | `main` | 0.633 | 0.408 | 0.491 | 0.766 | 6 prior tweaks tried, none helped |
+| BeatSource wiring | `0de8d22` | `main` | (no change) | | | | `TrackingMode::Klapuri` opt-in |
+| Pass 11 (fractional τ) | `db7aee4` | `main` | 0.635 | 0.430 | 0.507 | 0.785 | Parabolic-peak interp on inference winner |
+| Pass 11 (lit comparison) | `74c06e3` | `main` | (doc only) | | | | Establishes paper TA1/TA2 = 0.632/0.910 target |
+| Pass 12 (joint stub) | `568d9e0` | `klapuri/joint-posterior-experiment` | (no change) | | | | `joint_posterior` module + tests, not wired |
+| Pass 13 Phase A (36 narrow bands) | `9ef30f5` | branch | 0.652 | 0.441 | 0.527 | 0.808 | Per-narrow-band log+diff before sum (paper §III) |
+| Pass 13 Phase B (joint posterior wired) | `2d83bb9` | branch | 0.592 | 0.399 | 0.437 | 0.703 | Wired into `select()` (regression — fixed by Phase C) |
+| Pass 13 Phase C (Gaussian likelihood) | `b6fed9e` | branch | 0.680 | 0.474 | 0.571 | 0.910 | Per-cycle log-LR vs empirical noise floor |
+| Pass 13 Phase D (forward filter) | `e61bc28` | branch | 0.683 | 0.482 | 0.574 | 0.905 | Sparse-transition online HMM forward step |
+| Pass 13 Phase F (α tuning) | `8721734` | branch | 0.683 | 0.492 | 0.588 | 0.921 | α_t=1.5, α_h=0.2, α_m=0.4 |
+| Pass 13 Phase E (downbeat) | `05cd82d` | branch | (no change) | | | | Per-measure-position low-band-accent tracker (advisory) |
+| Pass 14 fix 1 (ACCENT_W) | `e0937b1` | branch | 0.693 | 0.502 | 0.598 | 0.930 | W 0.9 → 0.8 (paper exact) |
+| Pass 14 fix 2 (extended bank) | `bae8b48` | branch | 0.694 | 0.499 | 0.604 | 0.929 | τ_max 172 → 688 (paper §II-B) |
+| Aubio reference | — | — | 0.590 | 0.459 | 0.592 | 0.777 | Production default |
+| Paper-Klapuri (Gouyon 2006) | n/a | n/a | — | — | 0.632 | 0.910 | Target |
+
+**Branch tip vs aubio (`bae8b48`):** F **+0.104**, AMLt **+0.040**, TA1 **+0.012**, TA2 **+0.152** — beats on **all four metrics**.
+
+**Branch tip vs paper-Klapuri:** TA2 **+0.019** (beats), TA1 **−0.028** (still trails). Plausibly the residual is the offline-Viterbi vs online-forward-filter architectural ceiling — paper does both period and phase via Viterbi (non-causal), we do online causal.
+
+## Pass 14 — paper audit findings (vs `bae8b48`)
+
+Cross-referenced against text extracted from Eronen's PhD thesis (Tampere CRIS, contains paper [P5] verbatim) via `pdftotext`.
+
+| Component | Paper | Ours (pre-pass-14) | Status |
+|---|---|---|---|
+| Filterbank type | "logarithmically distributed subbands" (mel approximation) | mel | ✓ match |
+| Narrow-band count | 36 | 36 | ✓ match |
+| Output channel count | 4 | 4 | ✓ match |
+| FFT window length | 23 ms (1024 @ 44.1 kHz) | 1024 | ✓ match |
+| Hop length | 5.8 ms (256) | 256 | ✓ match |
+| μ-law μ | 100 | 100 | ✓ match |
+| Compression weight W | **0.8** | 0.9 | ✗ **fixed in `e0937b1`** |
+| Bank period range τ | **1 ≤ τ ≤ 688** (4 s) | 24 ≤ τ ≤ 172 | ✗ **fixed in `bae8b48`** |
+| Comb α formula | `0.5^(τ/(T₀.₅·fs))`, T₀.₅ = 3 s | same | ✓ match |
+| Resonator normalisation | `s(τ,n) = r̂(τ,n) / W₀(n)` per channel (eq. 8) | `r/((1−α)/(1+α))` (white-noise baseline) | ✗ **see Fix 3 below** |
+| Joint state | (τ_tatum, τ_tactus, τ_measure), top-5 each → 125 states (beam) | (τ_tactus, k_tatum, k_measure), all ~750 states | partial match — different parameterisation |
+| Period inference | Viterbi (offline, both causal and non-causal supported) | online forward filter | architectural ceiling — real-time only |
+| Phase tracking | Two parallel Viterbi HMMs (tactus + measure phase) | `phase_acc` argmax | architectural ceiling |
+| Tactus phase likelihood (eq. 27) | weighted sum across channels emphasising low frequency | argmax of summed `phase_acc` | partial — no low-freq emphasis |
+| Measure phase likelihood (eq. 32) | rhythmic-template matching ("low, loud, ., loud" / "low, ., loud, .") | not implemented | not implemented (downbeat tracker is separate, advisory) |
+| Tactus prior | two-param lognormal, μ=0.55 σ=0.28 (per Parncutt) | log-Gaussian centre 120 BPM, σ=0.8 | similar shape, different parameters; tested 80/100/110/120 in pass 9 — no effect |
+
+## Pass 14 — negative results (NOT shipped)
+
+Tried during pass 14 audit, regressed or no improvement, reverted on the branch:
+
+- **Paper normalisation `/W₀` standalone** (no commit): F 0.694 → 0.366. Catastrophic regression because our Gaussian log-LR likelihood compares energies against an empirical noise floor that breaks when energies are pre-normalised to ~[0, 1]. Will retry with the matching paper-eq-17 likelihood (Fix 3, planned).
+- **Per-band local-window Gaussian** (in pass 13 Phase G, not committed): radii 8/30/80 — all regress. Local stats don't help when neighbouring τ values have similar energy.
+- **Missing-level penalty sweeps** (in pass 13, not committed): −3.0/−1.0/0.0/−5.0 — no effect either direction.
+- **Anti-double-tempo demotion** (pass 10, not committed): thresholds 0.85/0.95/0.99 — every variant trades doubles for halves at net loss.
+- **Asymmetric BPM prior σ_fast≠σ_slow** (pass 10, not committed): 0.55/0.7 — same trade-off pattern.
+- **Consistency penalty `−β·max(0, e_m − e_t)`** (pass 14, not committed): β=4/20 — barely fires (energies satisfy condition only on a few tracks).
+- **Hard rejection when e_m > 1.2·e_t** (pass 14, not committed): doesn't trigger (typical e_m / e_t ratios on real audio < 1.2 even on doubled tracks).
 
 ## References
 
