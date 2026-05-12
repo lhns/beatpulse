@@ -71,8 +71,12 @@ impl PeriodInference {
     }
 
     /// Score every candidate τ in `bank.periods()`. Returns the
-    /// `(period_index, period_samples, bpm)` of the winner.
-    pub fn select(&mut self, bank: &mut ResonatorBank) -> Option<(usize, usize, f32)> {
+    /// `(period_index, period_samples, period_frac, bpm)` of the
+    /// winner. `period_frac` is the parabolic-interpolated peak
+    /// position in OSS frames — sub-frame resolution that prevents
+    /// integer-τ quantisation from drifting the locked beat schedule
+    /// off the truth tempo by ~0.5–1 ms/beat.
+    pub fn select(&mut self, bank: &mut ResonatorBank) -> Option<(usize, usize, f32, f32)> {
         let periods = bank.periods().to_vec();
         let energies = bank.total_energies().to_vec();
         if periods.is_empty() {
@@ -121,8 +125,30 @@ impl PeriodInference {
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())?;
         let tau = periods[best_i];
-        let bpm = 60.0 * self.oss_rate / tau as f32;
-        Some((best_i, tau, bpm))
+
+        // Parabolic peak interpolation around best_i, in units of
+        // period-array index. Adjacent periods in `default_period_range`
+        // differ by exactly 1 OSS frame, so the index offset is also
+        // the fractional-τ offset. Clamp |offset| ≤ 0.5 so we never
+        // cross a neighbour's peak.
+        let n = self.score_buf.len();
+        let tau_frac = if best_i > 0 && best_i + 1 < n {
+            let s_lo = self.score_buf[best_i - 1];
+            let s_mid = self.score_buf[best_i];
+            let s_hi = self.score_buf[best_i + 1];
+            let denom = s_lo - 2.0 * s_mid + s_hi;
+            let offset = if denom.abs() > 1e-12 {
+                (0.5 * (s_lo - s_hi) / denom).clamp(-0.5, 0.5)
+            } else {
+                0.0
+            };
+            tau as f32 + offset
+        } else {
+            tau as f32
+        };
+
+        let bpm = 60.0 * self.oss_rate / tau_frac;
+        Some((best_i, tau, tau_frac, bpm))
     }
 }
 
@@ -151,7 +177,7 @@ mod tests {
             bank.tick(accent);
         }
         let mut inf = PeriodInference::new(oss_rate);
-        let (_, tau, bpm) = inf.select(&mut bank).unwrap();
+        let (_, tau, _tau_frac, bpm) = inf.select(&mut bank).unwrap();
         assert!(
             (tau as i64 - target as i64).abs() <= 1,
             "expected tactus τ={target} (≈ {} BPM), got τ={tau} ({bpm:.1} BPM)",
@@ -183,7 +209,7 @@ mod tests {
             bank.tick(accent);
         }
         let mut inf = PeriodInference::new(oss_rate);
-        let (_, tau, bpm) = inf.select(&mut bank).unwrap();
+        let (_, tau, _tau_frac, bpm) = inf.select(&mut bank).unwrap();
         assert!(
             (tau as i64 - beat as i64).abs() <= 2,
             "expected tactus τ={beat} (≈ 120 BPM), got τ={tau} ({bpm:.1} BPM)"
@@ -210,7 +236,7 @@ mod tests {
             bank.tick(accent);
         }
         let mut inf = PeriodInference::new(oss_rate);
-        let (_, tau, bpm) = inf.select(&mut bank).unwrap();
+        let (_, tau, _tau_frac, bpm) = inf.select(&mut bank).unwrap();
         // Accept the right τ OR its octave (Klapuri may pick the
         // wrong octave when prior + energy fight; matching τ OR 2·τ
         // is good enough for this test).
@@ -289,7 +315,7 @@ mod tests {
         );
         // Now run inference and check the winner.
         let mut inf = PeriodInference::new(oss_rate);
-        let (_, tau, bpm) = inf.select(&mut bank).unwrap();
+        let (_, tau, _tau_frac, bpm) = inf.select(&mut bank).unwrap();
         assert!(
             (tau as i64 - target as i64).abs() <= 1,
             "expected τ={target} (≈ 120 BPM), got τ={tau} ({bpm:.1} BPM)"

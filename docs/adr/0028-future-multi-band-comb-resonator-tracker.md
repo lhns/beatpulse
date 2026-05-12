@@ -287,6 +287,34 @@ Why: at inference time the algorithm cannot distinguish "bank correctly identifi
 
 Pass 10 verdict: **no concrete bug found**, double-tempo trap requires algorithmic redesign rather than knob-tuning. Per the prior memory rule (shelve after 2 consecutive flat passes), Klapuri is now considered converged at F=0.631 / AMLt=0.424 / TA1=0.507 / TA2=0.789 and ready for opt-in integration as `BeatSource::Klapuri`. Further improvement would need sustained algorithmic work, not parameter sweeps.
 
+## Update — eleventh debugging pass: fractional τ via parabolic interpolation
+
+User suspected a real lock-loss bug behind the AMLt gap (0.424 vs aubio's 0.459). Phase A added a per-beat error-trajectory classifier to `tests/klapuri_experiment.rs` (filtering to TA2-correct + AMLt < 0.5 = AMLt-failing tracks where tempo is right within octave). Result on the AMLt-failing population:
+
+```
+clean=2  drift=2  jumps=200  oscill=1  mixed=104
+```
+
+The hypothesis (integer-τ quantisation drift) explained only **2/309 tracks** as pure linear drift. The dominant pattern was *steady-state polyrhythmic tracking* — `Albums-Latino_Latino-06` shows the signature:
+
+```
++12.0 -141.3 +0.9 +285.4 -10.2 +274.2 -11.3 +273.1 -2.4 -268.0
+```
+
+Alternating 0/+280 ms = pred-period ≈ 1.5× truth-period (3:2 polyrhythm) — the algorithm is reliably tracking *a* metrical level that happens to fall between TA2's 4 % octave bands but produces beats systematically offset from truth. Same algorithmic-not-bug limitation as the pass-10 double-tempo trap.
+
+A small *real* drift signal does exist (e.g. `Media-104916`: smooth ramp 0 → +83 ms over 86 beats = 1.1 ms/beat, exactly the integer-τ quantisation prediction). Shipped the fix anyway since it is theoretically correct + zero-risk:
+
+**Fix:** parabolic-peak interpolation around the inference winner in `PeriodInference::select`, returning `(idx, tau_int, tau_frac, bpm)`. `KlapuriTracker` stores `period_audio: f64 = tau_frac × hop` and uses it for both beat scheduling (`next_beat_abs: Option<f64>`) and `KlapuriSource::snap_pll_at_beat`'s PLL period. The integer τ is still used for `bank.phase_of(idx)` indexing and the τ-median ring; the fractional value is only consumed when it agrees with the median (within 1 OSS frame) so an octave-switch median doesn't get a stale fractional offset from the previous octave.
+
+| Pass | F | AMLt | TA1 | TA2 |
+|---|---|---|---|---|
+| 9 baseline | 0.631 | 0.424 | 0.507 | 0.789 |
+| **11 (+ fractional τ)** | **0.635** | **0.430** | **0.507** | **0.785** |
+| AubioTempo (reference) | 0.590 | 0.459 | 0.592 | 0.777 |
+
+F up +0.004, AMLt up +0.006, TA1 unchanged, TA2 within noise. Jumps-bucket count dropped 200 → 188 (−12), confirming some "jumps" were really cumulative drift exceeding the 30 ms step threshold. **AMLt gap to aubio narrowed from 0.035 to 0.029.** The remaining gap is structural (polyrhythmic locks), not a bug.
+
 ## References
 
 - Klapuri, A.P., Eronen, A.J., and Astola, J.T. *Analysis of the meter of acoustic musical signals.* IEEE TASLP 14(1):342–355, 2006. https://www.iro.umontreal.ca/~pift6080/H09/documents/papers/klapuri_meter.pdf

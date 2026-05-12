@@ -58,12 +58,20 @@ pub struct KlapuriTracker {
 
     /// Total accent frames consumed since reset.
     oss_frames: u64,
-    /// Most recently inferred tactus period (in OSS frames). 0 ⇒ no
-    /// lock yet.
+    /// Most recently inferred tactus period (in OSS frames, integer).
+    /// 0 ⇒ no lock yet. Used for `bank.phase_of(idx)` indexing and as
+    /// the input to the τ-median filter.
     tau_oss: usize,
-    /// Latest predicted-next-beat in absolute audio-sample units.
-    /// `None` until first lock.
-    next_beat_abs: Option<u64>,
+    /// Latest tactus period in **audio samples** as f64. Sub-frame
+    /// resolution from parabolic-peak interpolation around the
+    /// inference winner — prevents integer-τ quantisation drift
+    /// (~0.5–1 ms/beat) which accumulates over ~30 s into AMLt
+    /// failure on tracks whose true tempo falls between integer τ
+    /// values. 0.0 ⇒ no lock yet.
+    period_audio: f64,
+    /// Latest predicted-next-beat in absolute audio-sample units,
+    /// f64 for fractional accumulation. `None` until first lock.
+    next_beat_abs: Option<f64>,
     /// Absolute sample of the start of the next OSS frame (= where
     /// the current pending hop will land in host time).
     next_oss_frame_abs: u64,
@@ -92,6 +100,7 @@ impl KlapuriTracker {
             inference,
             oss_frames: 0,
             tau_oss: 0,
+            period_audio: 0.0,
             next_beat_abs: None,
             next_oss_frame_abs: 0,
             inference_interval: DEFAULT_INFERENCE_INTERVAL,
@@ -115,11 +124,16 @@ impl KlapuriTracker {
     pub fn current_period_oss(&self) -> usize {
         self.tau_oss
     }
+    /// Locked tactus period in audio samples, with sub-frame
+    /// (fractional-τ) resolution. 0.0 until the tracker locks.
+    pub fn current_period_audio(&self) -> f64 {
+        self.period_audio
+    }
     pub fn current_bpm(&self) -> f32 {
-        if self.tau_oss == 0 {
+        if self.period_audio <= 0.0 {
             return 0.0;
         }
-        60.0 * (self.sr as f32 / self.hop as f32) / self.tau_oss as f32
+        60.0 * self.sr as f32 / self.period_audio as f32
     }
 
     pub fn reset(&mut self) {
@@ -127,6 +141,7 @@ impl KlapuriTracker {
         self.bank.reset();
         self.oss_frames = 0;
         self.tau_oss = 0;
+        self.period_audio = 0.0;
         self.next_beat_abs = None;
         self.next_oss_frame_abs = 0;
         self.accent_dc = [0.0; N_BANDS];
@@ -178,11 +193,13 @@ impl KlapuriTracker {
         let hop = self.hop;
         let oss_frames = &mut self.oss_frames;
         let tau_oss = &mut self.tau_oss;
+        let period_audio_state = &mut self.period_audio;
         let next_beat_abs = &mut self.next_beat_abs;
         let inference_interval = self.inference_interval;
         let warmup_frames = self.warmup_frames;
         let sr = self.sr;
         let abs_at_sample = block_start_abs + *samples_into_block as u64;
+        let abs_at_sample_f = abs_at_sample as f64;
 
         let mut frame_fired = false;
         let mut frame_acc = [0.0f32; N_BANDS];
@@ -195,12 +212,13 @@ impl KlapuriTracker {
             // Within-hop: just check whether a predicted beat lands
             // at this audio sample.
             if let Some(nb) = *next_beat_abs {
-                if abs_at_sample >= nb {
-                    let off = ((nb - block_start_abs).min(u32::MAX as u64)) as u32;
-                    on_beat(off, nb);
+                if abs_at_sample_f >= nb {
+                    let nb_u = nb.round() as u64;
+                    let off = (nb_u.saturating_sub(block_start_abs).min(u32::MAX as u64)) as u32;
+                    on_beat(off, nb_u);
                     // Schedule the next beat.
-                    if *tau_oss > 0 {
-                        *next_beat_abs = Some(nb + (*tau_oss * hop) as u64);
+                    if *period_audio_state > 0.0 {
+                        *next_beat_abs = Some(nb + *period_audio_state);
                     }
                 }
             }
@@ -228,47 +246,49 @@ impl KlapuriTracker {
         // halfway between the prior prediction and the new one;
         // half-period jumps snap to the new anchor (octave switch).
         if *oss_frames > warmup_frames && *oss_frames % inference_interval == 0 {
-            if let Some((_raw_idx, raw_tau, _raw_bpm)) = inference.select(bank) {
+            if let Some((_raw_idx, raw_tau, raw_tau_frac, _raw_bpm)) = inference.select(bank) {
                 // Push the per-cycle winner into the τ-median ring.
                 self.tau_history[self.tau_history_pos] = raw_tau;
                 self.tau_history_pos = (self.tau_history_pos + 1) % TAU_HISTORY;
                 if self.tau_history_count < TAU_HISTORY {
                     self.tau_history_count += 1;
                 }
-                // Compute median over the valid entries — robust to
-                // single-cycle octave flip-flops.
+                // Median over valid entries — robust to single-cycle
+                // octave flip-flops.
                 let n = self.tau_history_count;
                 let mut buf = [0usize; TAU_HISTORY];
                 buf[..n].copy_from_slice(&self.tau_history[..n]);
                 buf[..n].sort_unstable();
                 let tau = buf[n / 2];
-                // Look up the bank index of the median τ for the
-                // phase_of read; fall back to the raw winner if for
-                // some reason the median isn't in the bank (cannot
-                // happen — it came from `inference.select` — but be
-                // defensive).
                 let idx = bank.periods().binary_search(&tau).unwrap_or(_raw_idx);
                 *tau_oss = tau;
+                // Use the parabolic-interpolated fractional τ for
+                // period when it agrees with the median (within one
+                // OSS frame), else fall back to the median integer τ
+                // — the fractional value is only meaningful when it
+                // describes the same octave the median selected.
+                let period_oss_f = if (raw_tau_frac - tau as f32).abs() < 1.0 {
+                    raw_tau_frac as f64
+                } else {
+                    tau as f64
+                };
+                *period_audio_state = period_oss_f * hop as f64;
                 let phase = bank.phase_of(idx);
-                let phase_audio_off = (phase as u64).saturating_mul(hop as u64);
-                let last_beat_audio = abs_at_sample.saturating_sub(phase_audio_off);
-                let period_audio = (tau as u64) * (hop as u64);
-                let mut nb = last_beat_audio + period_audio;
-                while nb <= abs_at_sample {
-                    nb += period_audio;
+                let phase_audio_off = phase as f64 * hop as f64;
+                let last_beat_audio = abs_at_sample_f - phase_audio_off;
+                let mut nb = last_beat_audio + *period_audio_state;
+                while nb <= abs_at_sample_f {
+                    nb += *period_audio_state;
                 }
                 if let Some(prev_nb) = *next_beat_abs {
-                    let prev_i = prev_nb as i64;
-                    let new_i = nb as i64;
-                    let diff_abs = (prev_i - new_i).unsigned_abs();
-                    if diff_abs > (period_audio / 2) {
+                    let diff_abs = (prev_nb - nb).abs();
+                    if diff_abs > 0.5 * *period_audio_state {
                         // Big jump (octave switch) — accept new anchor.
                         *next_beat_abs = Some(nb);
                     } else {
                         // Small adjustment — nudge halfway to avoid
                         // sudden phase jumps on stable tracks.
-                        let midpoint = ((prev_i + new_i) / 2) as u64;
-                        *next_beat_abs = Some(midpoint);
+                        *next_beat_abs = Some(0.5 * (prev_nb + nb));
                     }
                 } else {
                     *next_beat_abs = Some(nb);
@@ -279,11 +299,12 @@ impl KlapuriTracker {
 
         // Check beat emission for this audio sample as well.
         if let Some(nb) = *next_beat_abs {
-            if abs_at_sample >= nb {
-                let off = ((nb - block_start_abs).min(u32::MAX as u64)) as u32;
-                on_beat(off, nb);
-                if *tau_oss > 0 {
-                    *next_beat_abs = Some(nb + (*tau_oss * hop) as u64);
+            if abs_at_sample_f >= nb {
+                let nb_u = nb.round() as u64;
+                let off = (nb_u.saturating_sub(block_start_abs).min(u32::MAX as u64)) as u32;
+                on_beat(off, nb_u);
+                if *period_audio_state > 0.0 {
+                    *next_beat_abs = Some(nb + *period_audio_state);
                 }
             }
         }

@@ -386,10 +386,13 @@ impl KlapuriSource {
     /// shape so the downstream PLL behaviour is consistent across
     /// tracking modes.
     fn snap_pll_at_beat(&mut self, pll: &mut BeatPll, beat_abs: u64) {
-        let tau_oss = self.tracker.current_period_oss();
-        if tau_oss > 0 {
-            let raw_period = (tau_oss * self.tracker.hop()) as f64;
-            pll.period_samples = octave_correct_period(raw_period, self.sample_rate as f64);
+        let period_audio = self.tracker.current_period_audio();
+        if period_audio > 0.0 {
+            // Fractional-τ period (parabolic-peak interpolated) —
+            // sub-frame resolution prevents the integer-τ
+            // quantisation drift that accumulates into AMLt failures
+            // on tracks whose true tempo lies between integer τs.
+            pll.period_samples = octave_correct_period(period_audio, self.sample_rate as f64);
         } else if let Some(prev) = self.last_beat_sample {
             // Fall back to inter-beat interval if the tracker hasn't
             // exposed a locked period yet.

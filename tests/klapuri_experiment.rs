@@ -118,6 +118,17 @@ fn klapuri_ballroom() {
     let mut tally_twothird = 0usize;
     let mut tally_other = 0usize;
     let mut other_ratios: Vec<(f64, String, f64, f64)> = Vec::new();
+    // Per-track AMLt-failure-mode classification (Phase A, plan
+    // pass 11). For each track, compute the per-beat signed offset
+    // to nearest truth beat, then classify the trajectory shape.
+    let mut tally_clean = 0usize;
+    let mut tally_drift = 0usize;
+    let mut tally_jumps = 0usize;
+    let mut tally_oscill = 0usize;
+    let mut tally_mixed = 0usize;
+    let mut drift_examples: Vec<(String, f64, Vec<f64>)> = Vec::new();
+    let mut jumps_examples: Vec<(String, Vec<f64>)> = Vec::new();
+    let mut oscill_examples: Vec<(String, Vec<f64>)> = Vec::new();
     let n = bench.len();
     for (audio, truth, stem) in &bench {
         let est = run_klapuri(audio);
@@ -173,6 +184,126 @@ fn klapuri_ballroom() {
                 }
             }
         }
+
+        // Per-beat error trajectory + classification. Only meaningful
+        // on tracks where we got the tempo roughly right (TA2) AND
+        // AMLt actually failed (< 0.5 = the lock didn't hold) — that
+        // narrows to the population we're trying to understand.
+        if !s.tempo_acc_2 || s.amlt > 0.5 || est.len() < 12 || truth.len() < 12 {
+            continue;
+        }
+        let truth_sorted: Vec<f64> = {
+            let mut t = truth.clone();
+            t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            t
+        };
+        let truth_first = *truth_sorted.first().unwrap();
+        let truth_last = *truth_sorted.last().unwrap();
+        let nearest = |p: f64| -> f64 {
+            let i = truth_sorted
+                .partition_point(|&t| t < p)
+                .min(truth_sorted.len() - 1);
+            let lo = if i > 0 {
+                truth_sorted[i - 1]
+            } else {
+                truth_sorted[i]
+            };
+            let hi = truth_sorted[i];
+            if (p - lo).abs() < (hi - p).abs() {
+                lo
+            } else {
+                hi
+            }
+        };
+        // Filter est to within [truth_first, truth_last] — beats
+        // outside the truth range get spurious huge offsets when
+        // matched to the closest truth endpoint, which is a
+        // measurement artifact, not a real lock-loss.
+        let est_in_range: Vec<f64> = est
+            .iter()
+            .copied()
+            .filter(|&p| p >= truth_first && p <= truth_last)
+            .collect();
+        if est_in_range.len() < 12 {
+            continue;
+        }
+        // Signed offsets in ms.
+        let errs_ms: Vec<f64> = est_in_range
+            .iter()
+            .map(|&p| (p - nearest(p)) * 1000.0)
+            .collect();
+        let max_abs = errs_ms.iter().fold(0.0f64, |m, &e| m.max(e.abs()));
+        if max_abs < 35.0 {
+            tally_clean += 1;
+            continue;
+        }
+        // Drop the first 5 beats (post-warmup). Then classify.
+        let post: Vec<f64> = errs_ms.iter().skip(5).copied().collect();
+        if post.len() < 8 {
+            tally_clean += 1;
+            continue;
+        }
+        // Linear-drift score: |slope| of best-fit line in ms/beat.
+        let m = post.len() as f64;
+        let xbar = (m - 1.0) / 2.0;
+        let ybar = post.iter().sum::<f64>() / m;
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for (i, &y) in post.iter().enumerate() {
+            let dx = i as f64 - xbar;
+            num += dx * (y - ybar);
+            den += dx * dx;
+        }
+        let slope = if den > 0.0 { num / den } else { 0.0 };
+        let predicted: Vec<f64> = (0..post.len())
+            .map(|i| ybar + slope * (i as f64 - xbar))
+            .collect();
+        let resid: Vec<f64> = post.iter().zip(&predicted).map(|(&a, &b)| a - b).collect();
+        let resid_var = resid.iter().map(|&r| r * r).sum::<f64>() / m;
+        let resid_std = resid_var.sqrt();
+        // Step-jump score: max single-step delta in errs.
+        let max_step = post
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f64, f64::max);
+        // Oscillation: count sign changes in the differential.
+        let mut sign_changes = 0usize;
+        for i in 2..post.len() {
+            let d1 = post[i - 1] - post[i - 2];
+            let d2 = post[i] - post[i - 1];
+            if d1 * d2 < 0.0 && d1.abs() > 5.0 && d2.abs() > 5.0 {
+                sign_changes += 1;
+            }
+        }
+        let osc_rate = sign_changes as f64 / post.len() as f64;
+        // Classification thresholds.
+        let total_drift = (slope * post.len() as f64).abs();
+        let is_drift = total_drift > 40.0 && resid_std < 0.5 * total_drift;
+        let is_jumps = max_step > 30.0 && resid_std > 15.0;
+        let is_oscill = osc_rate > 0.3 && total_drift < 40.0;
+        match (is_drift, is_jumps, is_oscill) {
+            (true, false, false) => {
+                tally_drift += 1;
+                if drift_examples.len() < 5 {
+                    drift_examples.push((stem.clone(), slope, errs_ms.clone()));
+                }
+            }
+            (false, true, false) => {
+                tally_jumps += 1;
+                if jumps_examples.len() < 5 {
+                    jumps_examples.push((stem.clone(), errs_ms.clone()));
+                }
+            }
+            (false, false, true) => {
+                tally_oscill += 1;
+                if oscill_examples.len() < 5 {
+                    oscill_examples.push((stem.clone(), errs_ms.clone()));
+                }
+            }
+            _ => {
+                tally_mixed += 1;
+            }
+        }
     }
     let f_mean = sum_f / n as f64;
     let a_mean = sum_a / n as f64;
@@ -192,4 +323,63 @@ fn klapuri_ballroom() {
             println!("    ratio={r:.3}  truth={t:.1} est={e:.1}  {name}");
         }
     }
+    println!(
+        "\n  AMLt-failure-mode tally (TA2-correct tracks only, post-warmup): \
+         clean={tally_clean} drift={tally_drift} jumps={tally_jumps} \
+         oscill={tally_oscill} mixed={tally_mixed}"
+    );
+    let print_traj = |label: &str, examples: &[(String, Vec<f64>)]| {
+        if examples.is_empty() {
+            return;
+        }
+        println!("  {label} examples:");
+        for (name, errs) in examples {
+            let head: Vec<String> = errs.iter().take(10).map(|e| format!("{e:+.1}")).collect();
+            let tail: Vec<String> = if errs.len() > 20 {
+                errs.iter()
+                    .rev()
+                    .take(10)
+                    .map(|e| format!("{e:+.1}"))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            println!("    {name} ({} beats):", errs.len());
+            println!("      head: {}", head.join(" "));
+            if !tail.is_empty() {
+                println!("      tail: {}", tail.join(" "));
+            }
+        }
+    };
+    if !drift_examples.is_empty() {
+        println!("  drift examples (slope ms/beat shown):");
+        for (name, slope, errs) in &drift_examples {
+            let head: Vec<String> = errs.iter().take(10).map(|e| format!("{e:+.1}")).collect();
+            let tail: Vec<String> = if errs.len() > 20 {
+                errs.iter()
+                    .rev()
+                    .take(10)
+                    .map(|e| format!("{e:+.1}"))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            println!(
+                "    {name} ({} beats, slope={slope:+.2} ms/beat):",
+                errs.len()
+            );
+            println!("      head: {}", head.join(" "));
+            if !tail.is_empty() {
+                println!("      tail: {}", tail.join(" "));
+            }
+        }
+    }
+    print_traj("jumps", &jumps_examples);
+    print_traj("oscill", &oscill_examples);
 }

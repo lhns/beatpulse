@@ -374,7 +374,7 @@ fn dump_inference_state(audio: &[f32]) {
         println!("    τ={tau:3}  BPM={bpm:6.1}  energy={:.4e}", energies[i]);
     }
 
-    if let Some((winner_idx, winner_tau, winner_bpm)) = inf.select(&mut bank) {
+    if let Some((winner_idx, winner_tau, _winner_tau_frac, winner_bpm)) = inf.select(&mut bank) {
         println!("  inference winner: τ={winner_tau}  BPM={winner_bpm:.1}  (idx {winner_idx})");
     }
 }
