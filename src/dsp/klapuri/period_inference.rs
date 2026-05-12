@@ -95,9 +95,11 @@ impl PeriodInference {
             }
         };
         if needs_rebuild {
-            let mut jw = JointWeights::default();
-            jw.prior_centre_bpm = self.weights.prior_centre_bpm;
-            jw.prior_sigma = self.weights.prior_sigma;
+            let jw = JointWeights {
+                prior_centre_bpm: self.weights.prior_centre_bpm,
+                prior_sigma: self.weights.prior_sigma,
+                ..JointWeights::default()
+            };
             self.state_space = Some(JointStateSpace::new(bank_periods, self.oss_rate, jw));
         }
     }

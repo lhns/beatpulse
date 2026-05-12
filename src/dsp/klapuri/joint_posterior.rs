@@ -257,6 +257,41 @@ impl JointStateSpace {
     pub fn log_likelihood(&self, energies: &[f32], out: &mut [f32]) {
         debug_assert_eq!(out.len(), self.states.len());
         let w = &self.weights;
+
+        // Per-cycle empirical noise estimate: the median bank energy
+        // is the "everyone-resonates-a-bit" floor; matched resonators
+        // sit substantially above it. We use median instead of mean
+        // because the energy distribution is skewed (a few peaks,
+        // many low values) — median gives a robust noise floor.
+        let mut sorted = energies.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mu_n = sorted[sorted.len() / 2].max(1e-9);
+        // MAD as the spread (more robust than σ on skewed data).
+        let mad = {
+            let mut absdev: Vec<f32> = sorted.iter().map(|&e| (e - mu_n).abs()).collect();
+            absdev.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            absdev[absdev.len() / 2].max(1e-9)
+        };
+        let sigma_n = (1.4826 * mad).max(1e-9);
+        // "Matched" model — peaks should be substantially above noise.
+        let mu_match = mu_n + 3.0 * sigma_n;
+        let sigma_match = (2.0 * sigma_n).max(1e-9);
+
+        // Gaussian log-likelihood-ratio per pulse level. Energies near
+        // mu_n give log_lr ≈ 0 (no info); energies near mu_match give
+        // strongly positive log_lr; energies far below mu_n give
+        // negative log_lr (rejected). This is what the paper's joint
+        // model requires to reject weak peaks — log(1+e) couldn't.
+        let log_lr = |e: f32| -> f32 {
+            let z_match = (e - mu_match) / sigma_match;
+            let z_noise = (e - mu_n) / sigma_n;
+            // log P(e | matched) - log P(e | noise) up to constants
+            // (Gaussian normalisation cancels except for the
+            // log(σ_n / σ_match) bias, folded into a global constant
+            // that doesn't affect argmax).
+            -0.5 * z_match * z_match + 0.5 * z_noise * z_noise
+        };
+
         for (s, lik) in self.states.iter().zip(out.iter_mut()) {
             let e_t = energies[s.tactus_period_idx].max(0.0);
             let e_h = s
@@ -267,9 +302,21 @@ impl JointStateSpace {
                 .measure_period_idx
                 .map(|i| energies[i].max(0.0))
                 .unwrap_or(0.0);
-            *lik = w.alpha_t * (1.0 + e_t).ln()
-                + w.alpha_h * (1.0 + e_h).ln()
-                + w.alpha_m * (1.0 + e_m).ln();
+            // Levels with no bank coverage (Option None) get log_lr=0
+            // — neutral evidence, neither boost nor penalty. The
+            // missing-level prior penalty in `log_prior[]` handles
+            // the "this state is partial" downweighting separately.
+            let lr_h = if s.tatum_period_idx.is_some() {
+                log_lr(e_h)
+            } else {
+                0.0
+            };
+            let lr_m = if s.measure_period_idx.is_some() {
+                log_lr(e_m)
+            } else {
+                0.0
+            };
+            *lik = w.alpha_t * log_lr(e_t) + w.alpha_h * lr_h + w.alpha_m * lr_m;
         }
     }
 
