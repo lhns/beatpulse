@@ -21,6 +21,7 @@ use crate::dsp::aubio_tempo_tracker::AubioTempoTracker;
 use crate::dsp::beat_pll::BeatPll;
 use crate::dsp::beat_tracker::BeatTracker;
 use crate::dsp::consensus_tracker::ConsensusTracker;
+use crate::dsp::klapuri::KlapuriTracker;
 use crate::dsp::pulse_generator::{PulseEvent, PulseGenerator};
 use crate::params::{OnsetMethod, TrackingMode};
 
@@ -32,6 +33,7 @@ pub enum BeatSource {
     Reactive(ReactiveSource),
     Consensus(ConsensusSource),
     AubioTempo(AubioTempoSource),
+    Klapuri(KlapuriSource),
 }
 
 impl BeatSource {
@@ -63,6 +65,7 @@ impl BeatSource {
                 threshold,
                 pulse_rate,
             )?),
+            TrackingMode::Klapuri => BeatSource::Klapuri(KlapuriSource::new(sr, pulse_rate)),
         })
     }
 
@@ -71,6 +74,7 @@ impl BeatSource {
             BeatSource::Reactive(_) => TrackingMode::Reactive,
             BeatSource::Consensus(_) => TrackingMode::LookaheadConsensus,
             BeatSource::AubioTempo(_) => TrackingMode::AubioTempo,
+            BeatSource::Klapuri(_) => TrackingMode::Klapuri,
         }
     }
 
@@ -79,6 +83,7 @@ impl BeatSource {
             BeatSource::Reactive(s) => s.reset(),
             BeatSource::Consensus(s) => s.reset(),
             BeatSource::AubioTempo(s) => s.reset(),
+            BeatSource::Klapuri(s) => s.reset(),
         }
     }
 
@@ -87,6 +92,8 @@ impl BeatSource {
             BeatSource::Reactive(s) => s.tracker.set_threshold(t),
             BeatSource::Consensus(s) => s.tracker.set_threshold(t),
             BeatSource::AubioTempo(s) => s.tracker.set_threshold(t),
+            // Klapuri's accent stage is internal; threshold is a no-op.
+            BeatSource::Klapuri(_) => {}
         }
     }
 
@@ -95,6 +102,9 @@ impl BeatSource {
             BeatSource::Reactive(s) => s.tracker.set_method(m),
             BeatSource::Consensus(s) => s.tracker.set_method(m),
             BeatSource::AubioTempo(s) => s.tracker.set_method(m),
+            // Klapuri uses its own multi-band STFT-based accent —
+            // the OnsetMethod selector doesn't apply.
+            BeatSource::Klapuri(_) => Ok(()),
         }
     }
 
@@ -103,6 +113,7 @@ impl BeatSource {
             BeatSource::Reactive(s) => s.pulse_gen.set_pulse_rate(rate),
             BeatSource::Consensus(s) => s.pulse_gen.set_pulse_rate(rate),
             BeatSource::AubioTempo(s) => s.pulse.set_pulse_rate(rate),
+            BeatSource::Klapuri(s) => s.pulse.set_pulse_rate(rate),
         }
     }
 
@@ -119,6 +130,7 @@ impl BeatSource {
             BeatSource::Reactive(s) => s.process_block(mono, block_start_abs),
             BeatSource::Consensus(s) => s.process_block(mono, block_start_abs, pll),
             BeatSource::AubioTempo(s) => s.process_block(mono, block_start_abs),
+            BeatSource::Klapuri(s) => s.process_block(mono, block_start_abs),
         }
     }
 
@@ -131,6 +143,7 @@ impl BeatSource {
             BeatSource::Reactive(s) => s.tick(i, abs_sample, pll),
             BeatSource::Consensus(s) => s.tick(i, abs_sample, pll),
             BeatSource::AubioTempo(s) => s.tick(i, abs_sample, pll),
+            BeatSource::Klapuri(s) => s.tick(i, abs_sample, pll),
         }
     }
 }
@@ -312,4 +325,117 @@ impl AubioTempoSource {
             })
         })
     }
+}
+
+// ----- Klapuri -------------------------------------------------------
+
+/// Range BeatPLL accepts, mirrored from `aubio_tempo_tracker.rs` /
+/// `beat_pll.rs`. Used by the Klapuri snap to fold the inferred
+/// period into a sensible BPM range before handing it to the PLL.
+const KLAPURI_MIN_BPM: f64 = 60.0;
+const KLAPURI_MAX_BPM: f64 = 220.0;
+
+pub struct KlapuriSource {
+    pub tracker: KlapuriTracker,
+    pub pulse: AubioPulseEmitter,
+    sample_rate: u32,
+    beats: [(u32, u64); MAX_EVENTS_PER_BLOCK],
+    n_beats: usize,
+    next: usize,
+    last_beat_sample: Option<u64>,
+}
+
+impl KlapuriSource {
+    pub fn new(sr: u32, pulse_rate: u32) -> Self {
+        Self {
+            tracker: KlapuriTracker::new(sr),
+            pulse: AubioPulseEmitter::new(pulse_rate),
+            sample_rate: sr,
+            beats: [(0, 0); MAX_EVENTS_PER_BLOCK],
+            n_beats: 0,
+            next: 0,
+            last_beat_sample: None,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.tracker.reset();
+        self.pulse.reset();
+        self.n_beats = 0;
+        self.next = 0;
+        self.last_beat_sample = None;
+    }
+
+    pub fn process_block(&mut self, mono: &[f32], block_start_abs: u64) {
+        self.n_beats = 0;
+        self.next = 0;
+        let beats = &mut self.beats;
+        let n_beats = &mut self.n_beats;
+        self.tracker
+            .process_block(mono, block_start_abs, |offset, abs_sample| {
+                if *n_beats < MAX_EVENTS_PER_BLOCK {
+                    beats[*n_beats] = (offset, abs_sample);
+                    *n_beats += 1;
+                }
+            });
+    }
+
+    /// Snap `pll` from a Klapuri beat. Period comes from the tracker's
+    /// current locked tactus (in OSS frames × hop), with octave
+    /// correction. Mirrors `AubioTempoTracker::snap_pll_at_beat`'s
+    /// shape so the downstream PLL behaviour is consistent across
+    /// tracking modes.
+    fn snap_pll_at_beat(&mut self, pll: &mut BeatPll, beat_abs: u64) {
+        let tau_oss = self.tracker.current_period_oss();
+        if tau_oss > 0 {
+            let raw_period = (tau_oss * self.tracker.hop()) as f64;
+            pll.period_samples = octave_correct_period(raw_period, self.sample_rate as f64);
+        } else if let Some(prev) = self.last_beat_sample {
+            // Fall back to inter-beat interval if the tracker hasn't
+            // exposed a locked period yet.
+            let raw_period = (beat_abs as f64) - (prev as f64);
+            if raw_period > 0.0 {
+                pll.period_samples = octave_correct_period(raw_period, self.sample_rate as f64);
+            }
+        }
+        pll.last_onset_sample = Some(beat_abs as f64);
+        pll.phase_samples = 0.0;
+        pll.locked = true;
+        self.last_beat_sample = Some(beat_abs);
+    }
+
+    pub fn tick(&mut self, i: u32, abs_sample: u64, pll: &mut BeatPll) -> Option<PulseEvent> {
+        let mut on_beat: Option<PulseEvent> = None;
+        while self.next < self.n_beats && self.beats[self.next].0 == i {
+            let beat_abs = self.beats[self.next].1;
+            self.snap_pll_at_beat(pll, beat_abs);
+            if let Some(mut ev) = self.pulse.on_beat(beat_abs) {
+                ev.sample_offset = i;
+                on_beat = Some(ev);
+            }
+            self.next += 1;
+        }
+        pll.advance_one();
+        on_beat.or_else(|| {
+            self.pulse.tick(abs_sample).map(|mut ev| {
+                ev.sample_offset = i;
+                ev
+            })
+        })
+    }
+}
+
+fn octave_correct_period(mut period: f64, sample_rate: f64) -> f64 {
+    let min_period = sample_rate * 60.0 / KLAPURI_MAX_BPM;
+    let max_period = sample_rate * 60.0 / KLAPURI_MIN_BPM;
+    for _ in 0..6 {
+        if period < min_period {
+            period *= 2.0;
+        } else if period > max_period {
+            period *= 0.5;
+        } else {
+            break;
+        }
+    }
+    period
 }

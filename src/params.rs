@@ -75,14 +75,16 @@ pub enum CcValueMode {
 }
 
 /// Tracking mode — selects how the audio feeds the PLL. See ADR-0026
-/// (Lookahead Consensus) and ADR-0027 (Aubio Tempo).
+/// (Lookahead Consensus), ADR-0027 (Aubio Tempo), and ADR-0028
+/// (Klapuri 2006 multi-band tracker).
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum TrackingMode {
     /// Aubio's `Tempo` object (autocorrelation-based beat tracker).
-    /// Default since 2026-05-11 — F=0.58 / TA2=0.76 on Ballroom vs
-    /// 0.29 / 0.29 for Reactive on the same corpus. Same per-block
-    /// latency as Reactive (single hop ≈ 11.6 ms at 44.1 kHz). See
-    /// ADR-0027.
+    /// Default — F=0.59 / AMLt=0.46 / TA2=0.78 on Ballroom. Best
+    /// continuous-tracking metric (AMLt) of the available trackers,
+    /// which matters for visible light cueing — fewer "loses lock
+    /// mid-song" failures than Klapuri. Same per-block latency as
+    /// Reactive (single hop ≈ 11.6 ms at 44.1 kHz). See ADR-0027.
     #[name = "Aubio Tempo"]
     AubioTempo,
     /// Per-onset PLL feedback against `aubio::Onset` events. Lowest
@@ -97,6 +99,18 @@ pub enum TrackingMode {
     /// `AubioTempo` mistracks a particular full-mix source.
     #[name = "Lookahead Consensus"]
     LookaheadConsensus,
+    /// Klapuri 2006 multi-band comb-resonator tracker. F=0.63 /
+    /// AMLt=0.42 / TA2=0.79 on Ballroom — *beats aubio on F-measure
+    /// and TA2 by +0.04 / +0.01* (tighter beat alignment when
+    /// locked) but **trails on AMLt by 0.04** (loses lock more
+    /// often mid-song). Try it when AubioTempo's beat placement
+    /// feels slightly behind the music; stay on AubioTempo if you
+    /// see lights desync mid-song. Higher CPU cost (STFT + 4-band
+    /// accent + 150-resonator comb bank). Onset method / Sensitivity
+    /// have no effect — Klapuri's accent stage is internal. See
+    /// ADR-0028.
+    #[name = "Klapuri"]
+    Klapuri,
 }
 
 #[derive(Params)]
