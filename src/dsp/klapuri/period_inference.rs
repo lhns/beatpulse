@@ -190,7 +190,10 @@ fn forward_step(prev: &[f32], log_obs: &[f32], periods: &[usize]) -> Vec<f32> {
                 k += 1;
             }
         }
-        let m = log_in[..k].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let m = log_in[..k]
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
         if m > f32::NEG_INFINITY {
             let s: f32 = log_in[..k].iter().map(|&x| (x - m).exp()).sum();
             out[j] = log_obs[j] + m + s.ln();
@@ -200,7 +203,6 @@ fn forward_step(prev: &[f32], log_obs: &[f32], periods: &[usize]) -> Vec<f32> {
     }
     out
 }
-
 
 #[cfg(test)]
 mod tests {
