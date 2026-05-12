@@ -249,9 +249,20 @@ impl ResonatorBank {
 /// tactus — they exist only as supporting evidence.
 pub fn default_period_range(sr: u32, hop: usize) -> Vec<usize> {
     let oss_rate = sr as f32 / hop as f32;
-    let min_bpm_tactus = 60.0_f32;
+    // Paper-faithful range (Klapuri 2006 §II-B): "τ getting values
+    // from 1 to ν_max where ν_max = 688 corresponds to 4 s". The
+    // wide range supports measure-level resonance for slow tactus
+    // values — without it, slow-tactus joint states have no
+    // measure evidence and lose to fast-tactus states whose
+    // measure is in range (the doubles trap).
+    //
+    // We start from `min_period` corresponding to ~440 BPM (very
+    // fast tatum candidates) rather than 1 to avoid empty slots
+    // in the bank — the `min_period.max(1)` floor below covers it
+    // anyway.
+    let measure_max_seconds = 4.0_f32;
+    let max_period = (measure_max_seconds * oss_rate).ceil() as usize;
     let max_bpm_evidence = 440.0_f32;
-    let max_period = (60.0 * oss_rate / min_bpm_tactus).ceil() as usize;
     let min_period = (60.0 * oss_rate / max_bpm_evidence).floor() as usize;
     (min_period.max(1)..=max_period).collect()
 }
@@ -364,11 +375,13 @@ mod tests {
         let r = default_period_range(44_100, 256);
         let oss = 44_100.0 / 256.0;
         let max_bpm = 60.0 * oss / *r.first().unwrap() as f32;
-        let min_bpm_tactus = 60.0 * oss / *r.last().unwrap() as f32;
-        // Range still covers 60 BPM at the long end.
+        let bank_min_bpm = 60.0 * oss / *r.last().unwrap() as f32;
+        // Range covers down past 60 BPM tactus to fit measure×4 for
+        // the slowest tactus (paper Klapuri 2006 §II-B: τ_max=688 ≈
+        // 4 s = 15 BPM-equivalent).
         assert!(
-            (min_bpm_tactus - 60.0).abs() < 1.0,
-            "long-end ≈ 60 BPM (got {min_bpm_tactus:.1})"
+            bank_min_bpm < 20.0,
+            "long-end should reach ~15 BPM (4× measure of 60 BPM tactus); got {bank_min_bpm:.1}"
         );
         // Range extends low enough that every tactus candidate τ ≥ 47
         // has its τ/2 also in the range.
