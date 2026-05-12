@@ -139,6 +139,7 @@ impl KlapuriTracker {
     pub fn reset(&mut self) {
         self.accent.reset();
         self.bank.reset();
+        self.inference.reset();
         self.oss_frames = 0;
         self.tau_oss = 0;
         self.period_audio = 0.0;

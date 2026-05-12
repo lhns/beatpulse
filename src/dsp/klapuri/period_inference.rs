@@ -57,7 +57,7 @@ pub struct PeriodInference {
     pub weights: InferenceWeights,
     /// OSS rate (samples/sec) used to derive BPM from period.
     oss_rate: f32,
-    /// Reusable scratch for the per-candidate score vector.
+    /// Per-candidate τ score scratch — `raw_evidence × bpm_prior`.
     score_buf: Vec<f32>,
 }
 
@@ -70,25 +70,29 @@ impl PeriodInference {
         }
     }
 
-    /// Score every candidate τ in `bank.periods()`. Returns the
+    /// Reset all internal state. Currently a no-op — `select()`
+    /// recomputes everything from the bank state each cycle. Kept as
+    /// a stable hook for future temporal-filter activation.
+    pub fn reset(&mut self) {}
+
+    /// Score every candidate τ in `bank.periods()` and return the
     /// `(period_index, period_samples, period_frac, bpm)` of the
-    /// winner. `period_frac` is the parabolic-interpolated peak
-    /// position in OSS frames — sub-frame resolution that prevents
-    /// integer-τ quantisation from drifting the locked beat schedule
-    /// off the truth tempo by ~0.5–1 ms/beat.
+    /// winning tactus. `period_frac` is the parabolic-interpolated
+    /// peak position in OSS frames — sub-frame resolution that
+    /// prevents integer-τ quantisation from drifting the locked beat
+    /// schedule by ~0.5–1 ms/beat (pass-11 fix).
     pub fn select(&mut self, bank: &mut ResonatorBank) -> Option<(usize, usize, f32, f32)> {
         let periods = bank.periods().to_vec();
         let energies = bank.total_energies().to_vec();
         if periods.is_empty() {
             return None;
         }
-        self.score_buf.resize(periods.len(), 0.0);
+        let n = periods.len();
+        self.score_buf.resize(n, 0.0);
+
         let w = &self.weights;
         let centre_log = w.prior_centre_bpm.ln();
         let sigma = w.prior_sigma.max(1e-6);
-
-        // Look up energy at a candidate period via the periods slice.
-        // Returns 0 if out of range.
         let lookup = |target: usize| -> f32 {
             match periods.binary_search(&target) {
                 Ok(idx) => energies[idx],
@@ -103,18 +107,14 @@ impl PeriodInference {
             let e_m2 = lookup(tau * 2);
             let e_m3 = lookup(tau * 3);
             let e_m4 = lookup(tau * 4);
-
             let raw = w.w_tactus * e_t
                 + w.w_tatum_half * e_th2
                 + w.w_tatum_third * e_th3
                 + w.w_measure_2 * e_m2
                 + w.w_measure_3 * e_m3
                 + w.w_measure_4 * e_m4;
-
-            // BPM-prior in log-BPM space.
             let bpm = 60.0 * self.oss_rate / tau as f32;
             let z = (bpm.ln() - centre_log) / sigma;
-            // Gaussian density (up to a constant): exp(-z²/2).
             let prior = (-0.5 * z * z).exp();
             self.score_buf[i] = raw * prior;
         }
@@ -126,12 +126,6 @@ impl PeriodInference {
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())?;
         let tau = periods[best_i];
 
-        // Parabolic peak interpolation around best_i, in units of
-        // period-array index. Adjacent periods in `default_period_range`
-        // differ by exactly 1 OSS frame, so the index offset is also
-        // the fractional-τ offset. Clamp |offset| ≤ 0.5 so we never
-        // cross a neighbour's peak.
-        let n = self.score_buf.len();
         let tau_frac = if best_i > 0 && best_i + 1 < n {
             let s_lo = self.score_buf[best_i - 1];
             let s_mid = self.score_buf[best_i];
@@ -151,6 +145,62 @@ impl PeriodInference {
         Some((best_i, tau, tau_frac, bpm))
     }
 }
+
+// Pass-12 attempted to wire the joint (tatum, tactus, measure)
+// posterior + an online forward filter through `select()`. Both
+// regressed on Ballroom (joint per-frame: F 0.635 → 0.476;
+// linear-sum + forward filter: F 0.635 → 0.603). The joint state
+// space + likelihood/marginalisation lives in
+// [`super::joint_posterior`] as a research artifact + future-work
+// hook; the forward-step kernel below is preserved unattached for
+// when the bank's evidence structure (or a different observation
+// model) makes either viable.
+#[allow(dead_code)]
+fn forward_step(prev: &[f32], log_obs: &[f32], periods: &[usize]) -> Vec<f32> {
+    const P_STAY: f32 = 0.85;
+    const P_DRIFT: f32 = 0.05;
+    const P_OCTAVE: f32 = 0.025;
+    let log_p_stay = P_STAY.ln();
+    let log_p_drift = P_DRIFT.ln();
+    let log_p_octave = P_OCTAVE.ln();
+    let n = periods.len();
+    let mut out = vec![f32::NEG_INFINITY; n];
+    for (j, &tau_j) in periods.iter().enumerate() {
+        let mut log_in: [f32; 5] = [f32::NEG_INFINITY; 5];
+        let mut k = 0;
+        log_in[k] = prev[j] + log_p_stay;
+        k += 1;
+        if j > 0 {
+            log_in[k] = prev[j - 1] + log_p_drift;
+            k += 1;
+        }
+        if j + 1 < n {
+            log_in[k] = prev[j + 1] + log_p_drift;
+            k += 1;
+        }
+        if let Ok(i) = periods.binary_search(&(tau_j / 2)) {
+            if i != j {
+                log_in[k] = prev[i] + log_p_octave;
+                k += 1;
+            }
+        }
+        if let Ok(i) = periods.binary_search(&(tau_j * 2)) {
+            if i != j {
+                log_in[k] = prev[i] + log_p_octave;
+                k += 1;
+            }
+        }
+        let m = log_in[..k].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        if m > f32::NEG_INFINITY {
+            let s: f32 = log_in[..k].iter().map(|&x| (x - m).exp()).sum();
+            out[j] = log_obs[j] + m + s.ln();
+        } else {
+            out[j] = log_obs[j];
+        }
+    }
+    out
+}
+
 
 #[cfg(test)]
 mod tests {
