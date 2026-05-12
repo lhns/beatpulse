@@ -63,7 +63,7 @@ const DC_ALPHA: f32 = 0.97;
 /// The sustained-energy term keeps the accent non-zero on tracks with
 /// long sustained notes (waltz strings, tango bandoneon, sustained
 /// chords) where pure spectral flux goes to ~0.
-const ACCENT_W: f32 = 0.9;
+const ACCENT_W: f32 = 0.8;
 
 /// Compute mel-warped band boundaries (in FFT-bin indices) for a
 /// `fft_size`-point analysis at `sr`. Splits 0 .. sr/2 into
