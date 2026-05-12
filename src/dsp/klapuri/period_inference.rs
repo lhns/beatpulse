@@ -17,7 +17,7 @@
 //! The winning τ is the tactus (one beat). Phase comes from the
 //! winning resonator's delay-line state — see [`super::phase`].
 
-use crate::dsp::klapuri::joint_posterior::{JointStateSpace, JointWeights};
+use crate::dsp::klapuri::joint_posterior::{ForwardFilter, JointStateSpace, JointWeights};
 use crate::dsp::klapuri::resonators::ResonatorBank;
 
 /// Configurable weights for the period-score combination. Defaults
@@ -67,6 +67,10 @@ pub struct PeriodInference {
     /// Joint state space over (tactus, k_tatum, k_measure), built
     /// lazily from the bank's period range.
     state_space: Option<JointStateSpace>,
+    /// Online forward filter — built alongside `state_space` and
+    /// updated once per inference cycle. Provides temporal continuity
+    /// (Phase D of pass 13).
+    forward_filter: Option<ForwardFilter>,
 }
 
 impl PeriodInference {
@@ -77,13 +81,15 @@ impl PeriodInference {
             score_buf: Vec::new(),
             log_lik_buf: Vec::new(),
             state_space: None,
+            forward_filter: None,
         }
     }
 
-    /// Reset all internal state. Drops the cached state space so the
-    /// next `select()` call rebuilds it (cheap, ~750 states).
+    /// Reset all internal state. Drops the cached state space and
+    /// forward-filter posterior so the next track starts fresh.
     pub fn reset(&mut self) {
         self.state_space = None;
+        self.forward_filter = None;
     }
 
     fn ensure_state_space(&mut self, bank_periods: &[usize]) {
@@ -100,7 +106,9 @@ impl PeriodInference {
                 prior_sigma: self.weights.prior_sigma,
                 ..JointWeights::default()
             };
-            self.state_space = Some(JointStateSpace::new(bank_periods, self.oss_rate, jw));
+            let ss = JointStateSpace::new(bank_periods, self.oss_rate, jw);
+            self.forward_filter = Some(ForwardFilter::new(&ss));
+            self.state_space = Some(ss);
         }
     }
 
@@ -123,15 +131,19 @@ impl PeriodInference {
             return None;
         }
 
-        // Phase B: joint posterior over (tactus, k_tatum, k_measure).
-        // Compute per-state log-likelihood from the bank's
-        // post-DC-removal normalised energies, then log-sum-exp over
-        // (k_tatum, k_measure) per tactus to get a per-tactus score.
+        // Phase D: joint posterior over (tactus, k_tatum, k_measure)
+        // run through the online forward filter for temporal
+        // continuity. Per-state log-likelihood from the bank's
+        // post-DC-removal energies → forward-step update against the
+        // prior log-posterior → per-tactus marginal log-sum-exp.
         self.log_lik_buf.resize(ss.n_states(), 0.0);
         ss.log_likelihood(&energies, &mut self.log_lik_buf);
 
+        let ff = self.forward_filter.as_mut()?;
+        ff.update(&self.log_lik_buf, ss.log_prior());
+
         self.score_buf.resize(n, f32::NEG_INFINITY);
-        ss.marginalise_per_tactus(&self.log_lik_buf, n, &mut self.score_buf);
+        ff.marginalise_per_tactus(ss, n, &mut self.score_buf);
 
         // Argmax in log-space.
         let (best_i, &best_score) = self

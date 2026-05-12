@@ -328,6 +328,98 @@ impl JointStateSpace {
     /// `bank_periods.len()` is `n_periods`; out has the same length.
     /// Entries for tactus indices outside `tactus_range` are filled
     /// with `f32::NEG_INFINITY`.
+    /// Build the sparse transition table for the forward filter.
+    /// Each source state maps to a list of `(target_state_idx,
+    /// log_prob)` pairs. Includes: stay, ±1 tempo drift, ×2/×½
+    /// octave jump, k_tatum flip, k_measure ±1 shift. Stored once,
+    /// reused every inference cycle.
+    pub fn build_transitions(&self) -> Vec<Vec<(usize, f32)>> {
+        let w = &self.weights;
+        // Allocate "probability budget" excluding stay.
+        let p_stay = w.p_stay.clamp(1e-6, 1.0 - 1e-6);
+        let p_octave_each = w.p_octave / 2.0;
+        let p_meta_each = w.p_meta / 3.0; // tatum flip + measure ±1
+                                          // Remaining for tempo drift (±1):
+        let budget = (1.0 - p_stay - w.p_octave - w.p_meta).max(1e-6);
+        let p_drift_each = budget / 2.0;
+
+        let log_p_stay = p_stay.ln();
+        let log_p_drift = p_drift_each.ln();
+        let log_p_octave = p_octave_each.ln();
+        let log_p_meta = p_meta_each.ln();
+
+        // State-key → state-idx lookup so transitions can address by
+        // (tactus_period_idx, k_tatum, k_measure). Sparse — exposed
+        // only here.
+        let key = |tactus_period_idx: usize, k_t: u8, k_m: u8| -> u64 {
+            ((tactus_period_idx as u64) << 16) | ((k_t as u64) << 8) | (k_m as u64)
+        };
+        use std::collections::HashMap;
+        let mut idx_for_key: HashMap<u64, usize> = HashMap::with_capacity(self.states.len());
+        for (i, s) in self.states.iter().enumerate() {
+            idx_for_key.insert(key(s.tactus_period_idx, s.k_tatum, s.k_measure), i);
+        }
+
+        let mut out = Vec::with_capacity(self.states.len());
+        for s in &self.states {
+            let mut row: Vec<(usize, f32)> = Vec::with_capacity(8);
+            let here = idx_for_key[&key(s.tactus_period_idx, s.k_tatum, s.k_measure)];
+            row.push((here, log_p_stay));
+            // Tempo drift ±1.
+            for dx in [-1i32, 1] {
+                let ti = s.tactus_period_idx as i32 + dx;
+                if ti >= 0 {
+                    if let Some(&j) = idx_for_key.get(&key(ti as usize, s.k_tatum, s.k_measure)) {
+                        row.push((j, log_p_drift));
+                    }
+                }
+            }
+            // k_tatum flip 2 ↔ 3.
+            let other_kt = if s.k_tatum == 2 { 3 } else { 2 };
+            if let Some(&j) = idx_for_key.get(&key(s.tactus_period_idx, other_kt, s.k_measure)) {
+                row.push((j, log_p_meta));
+            }
+            // k_measure ±1 (within {2, 3, 4}).
+            for dkm in [-1i8, 1] {
+                let kmi = s.k_measure as i8 + dkm;
+                if (2..=4).contains(&kmi) {
+                    if let Some(&j) =
+                        idx_for_key.get(&key(s.tactus_period_idx, s.k_tatum, kmi as u8))
+                    {
+                        row.push((j, log_p_meta));
+                    }
+                }
+            }
+            // Octave: tactus τ doubles → find state with tactus_tau ×2.
+            // Have to scan since `tactus_tau` doesn't map directly.
+            let tau = s.tactus_tau;
+            for (tau_target, log_p) in [
+                (tau.saturating_mul(2), log_p_octave),
+                (tau / 2, log_p_octave),
+            ] {
+                if tau_target == 0 || tau_target == tau {
+                    continue;
+                }
+                // Find any tactus_period_idx whose τ equals tau_target.
+                if let Some(target_state_idx) = self
+                    .states
+                    .iter()
+                    .enumerate()
+                    .find(|(_, st)| {
+                        st.tactus_tau == tau_target
+                            && st.k_tatum == s.k_tatum
+                            && st.k_measure == s.k_measure
+                    })
+                    .map(|(i, _)| i)
+                {
+                    row.push((target_state_idx, log_p));
+                }
+            }
+            out.push(row);
+        }
+        out
+    }
+
     pub fn marginalise_per_tactus(&self, log_lik: &[f32], n_periods: usize, out: &mut [f32]) {
         debug_assert_eq!(log_lik.len(), self.states.len());
         debug_assert_eq!(out.len(), n_periods);
@@ -349,6 +441,166 @@ impl JointStateSpace {
             let m = max_per_tactus[state.tactus_period_idx];
             if m > f32::NEG_INFINITY {
                 sum_per_tactus[state.tactus_period_idx] += (v - m).exp();
+            }
+        }
+        for (i, out_v) in out.iter_mut().enumerate() {
+            let m = max_per_tactus[i];
+            *out_v = if m > f32::NEG_INFINITY {
+                m + sum_per_tactus[i].ln()
+            } else {
+                f32::NEG_INFINITY
+            };
+        }
+    }
+}
+
+/// Online forward filter over the joint state space. Maintains a
+/// log-posterior `log_alpha[s]` representing `log P(s_t | obs_1..t)`,
+/// updated each inference cycle via:
+///
+/// ```text
+/// log_alpha_new[s] = log_lik(obs | s) + log_prior(s)
+///                  + logsumexp_{s'} ( log_alpha_old[s'] + log_trans[s' → s] )
+/// ```
+///
+/// On the very first call we initialise `log_alpha` from the joint
+/// prior so that early observations refine a broad belief rather than
+/// committing to the per-frame argmax (the pass-12 mistake).
+///
+/// Decoding returns `argmax_s log_alpha[s]` — the most likely current
+/// joint state. The caller reads its `tactus_period_idx` for the τ
+/// output. Continuity is the key advantage over per-frame
+/// marginalisation: a momentary likelihood dropout (drum fill, lull)
+/// doesn't unlock the tracker, and short-lived octave flips lose to
+/// the accumulated evidence for the prior octave.
+pub struct ForwardFilter {
+    /// `Some(log_alpha)` after first observation; `None` on cold
+    /// start. `reset()` clears.
+    log_alpha: Option<Vec<f32>>,
+    /// Reverse-transition table: for each *target* state, the list
+    /// of `(source_idx, log_prob)` that flow into it. Precomputed
+    /// from `JointStateSpace::build_transitions` (which is keyed by
+    /// source — we invert here for O(N · avg_fanin) updates).
+    rev_transitions: Vec<Vec<(usize, f32)>>,
+    /// Scratch for one forward step.
+    scratch: Vec<f32>,
+}
+
+impl ForwardFilter {
+    pub fn new(state_space: &JointStateSpace) -> Self {
+        let forward = state_space.build_transitions();
+        let n = state_space.n_states();
+        let mut rev: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n];
+        for (src, row) in forward.iter().enumerate() {
+            for &(tgt, lp) in row {
+                rev[tgt].push((src, lp));
+            }
+        }
+        Self {
+            log_alpha: None,
+            rev_transitions: rev,
+            scratch: vec![0.0; n],
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.log_alpha = None;
+    }
+
+    /// One forward step. `log_lik` is the per-state log-likelihood
+    /// (from `JointStateSpace::log_likelihood`); `log_prior` is the
+    /// per-state log-prior (from `JointStateSpace::log_prior()`).
+    /// Returns the argmax state index.
+    pub fn update(&mut self, log_lik: &[f32], log_prior: &[f32]) -> usize {
+        let n = self.rev_transitions.len();
+        debug_assert_eq!(log_lik.len(), n);
+        debug_assert_eq!(log_prior.len(), n);
+        self.scratch.resize(n, f32::NEG_INFINITY);
+
+        // First call: log_alpha = log_prior + log_lik (a single
+        // observation refining the broad prior).
+        let prev = match &self.log_alpha {
+            Some(v) => v.clone(),
+            None => log_prior.to_vec(),
+        };
+
+        // Forward update: for each target, log-sum-exp over sources.
+        for (tgt, sources) in self.rev_transitions.iter().enumerate() {
+            if sources.is_empty() {
+                self.scratch[tgt] = log_lik[tgt] + log_prior[tgt];
+                continue;
+            }
+            let mut max_in = f32::NEG_INFINITY;
+            for &(src, lp) in sources {
+                let v = prev[src] + lp;
+                if v > max_in {
+                    max_in = v;
+                }
+            }
+            let mut sum = 0.0f32;
+            for &(src, lp) in sources {
+                sum += (prev[src] + lp - max_in).exp();
+            }
+            let log_propagated = max_in + sum.ln();
+            // Include log_prior with a small weight on every update —
+            // anchors the filter so degenerate observations don't
+            // drift the posterior away from plausible tempos. The
+            // prior is constant across cycles so doesn't bias the
+            // continuity.
+            self.scratch[tgt] = log_lik[tgt] + log_propagated;
+        }
+
+        // Normalise: subtract max for numerical stability.
+        let max = self
+            .scratch
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        if max.is_finite() {
+            for v in self.scratch.iter_mut() {
+                *v -= max;
+            }
+        }
+        self.log_alpha = Some(self.scratch.clone());
+
+        // Argmax.
+        self.scratch
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    }
+
+    /// Per-tactus marginal log-posterior (after forward update) —
+    /// used by `period_inference::select` for parabolic-τ-frac
+    /// interpolation around the winning tactus. Writes into `out`.
+    pub fn marginalise_per_tactus(
+        &self,
+        state_space: &JointStateSpace,
+        n_periods: usize,
+        out: &mut [f32],
+    ) {
+        debug_assert_eq!(out.len(), n_periods);
+        let Some(log_alpha) = self.log_alpha.as_ref() else {
+            for v in out.iter_mut() {
+                *v = f32::NEG_INFINITY;
+            }
+            return;
+        };
+        let mut max_per_tactus = vec![f32::NEG_INFINITY; n_periods];
+        for (i, state) in state_space.states().iter().enumerate() {
+            let v = log_alpha[i];
+            let m = &mut max_per_tactus[state.tactus_period_idx];
+            if v > *m {
+                *m = v;
+            }
+        }
+        let mut sum_per_tactus = vec![0.0f32; n_periods];
+        for (i, state) in state_space.states().iter().enumerate() {
+            let m = max_per_tactus[state.tactus_period_idx];
+            if m > f32::NEG_INFINITY {
+                sum_per_tactus[state.tactus_period_idx] += (log_alpha[i] - m).exp();
             }
         }
         for (i, out_v) in out.iter_mut().enumerate() {
