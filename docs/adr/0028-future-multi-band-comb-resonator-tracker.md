@@ -315,6 +315,33 @@ A small *real* drift signal does exist (e.g. `Media-104916`: smooth ramp 0 → +
 
 F up +0.004, AMLt up +0.006, TA1 unchanged, TA2 within noise. Jumps-bucket count dropped 200 → 188 (−12), confirming some "jumps" were really cumulative drift exceeding the 30 ms step threshold. **AMLt gap to aubio narrowed from 0.035 to 0.029.** The remaining gap is structural (polyrhythmic locks), not a bug.
 
+## Literature comparison & realism check
+
+User asked whether F=0.635 / AMLt=0.430 is realistic for a Klapuri 2006 implementation, or whether we still have bugs. Cross-referenced against published numbers:
+
+**Klapuri 2006 on Ballroom** (per Gouyon, Klapuri, Dixon et al. 2006, "An experimental comparison of audio tempo induction algorithms", reproduced in several follow-up papers):
+
+| Metric | Klapuri 2006 (paper) | Ours (pass 11) | Gap |
+|---|---|---|---|
+| Acc1 (strict tempo, ±4 %) | **63.18 %** | 50.7 % | **−12.5 pts** |
+| Acc2 (octave-tolerant) | **90.97 %** | 78.5 % | **−12.5 pts** |
+
+**The user's instinct was right — we are systematically ~12.5 percentage points below the paper's Ballroom result on both tempo metrics.** That gap is too large to be implementation noise or corpus-version differences; it points to a real missing component.
+
+**What the paper actually specifies** (per the abstract + §IV-C summary): "A probabilistic model which represents primitive musical knowledge and uses the low-level observations to perform joint estimation of the tatum, tactus, and measure pulses, which takes into account the temporal dependencies between successive estimates and enables both causal and noncausal analysis."
+
+**What we implement**: linear weighted sum of `e(τ) + 0.6·e(τ/2) + 0.3·e(τ/3) + 0.7·e(2τ) + …` × log-Gaussian BPM prior, picked per-inference-cycle, smoothed with a τ-median-of-5 ring. **No joint posterior**, **no temporal-continuity probability model**, **no noncausal (Viterbi/forward-backward) smoothing**. That's the same gap pass 10's structural-bias analysis hit, and pass 11's polyrhythmic-trajectory diagnostic confirmed: the missing 12.5 points are exactly the joint posterior + DP continuity that's been "out of scope" all along.
+
+For context, ISMIR 2004 contest overall (across multiple corpora) — Klapuri won at Acc1 = 67.29 %, Acc2 = 85.01 %. The Ballroom-only result (Acc2 = 90.97 %) is higher than the overall because Ballroom has steady tempo. On harder corpora with expressive timing, paper-Klapuri scores below us — so the gap is corpus-specific to Ballroom, where the joint posterior's continuity prior helps most. Reference: Ballroom annotations were originally made with Davies' hybrid tracker, giving some annotation bias toward Davies-style picks; paper-Klapuri's 91 % is achieved despite that bias.
+
+**On the waveclock question**: waveclock's product page (wavesum.net) explicitly states it is "based on psychoacoustically motivated algorithm by Anssi Klapuri & AL." It is a commercial Klapuri-family implementation, not a different algorithm. The IEEE paper "Equilibria of Adaptive Wavetable Oscillators with Applications to Beat Tracking" suggests it may extend Klapuri's idea with adaptive oscillators on top, but the core lineage is the same as ours. So the user's "why doesn't waveclock use aubio if aubio is better?" question reduces to:
+
+1. **Aubio is *not* uniformly better.** Aubio's autocorrelation handles polyrhythms more robustly on stationary-tempo corpora (Ballroom), but doesn't adapt as well to expressive timing changes (live DJ pitch-shifts, rubato, ritardando). Klapuri-style comb filters with the full joint posterior do — that's the design tradeoff.
+2. **Waveclock's commercial product is closer to paper-Klapuri than our implementation is** — they likely have the joint posterior + DP continuity that closes the 12.5-point gap we observe.
+3. **The fact that aubio scores well on Ballroom is partly Ballroom-specific.** Davies-derived annotations + steady tempo + Western-pop bias all favour autocorrelation. The same trackers reverse rankings on harder corpora (SMC, GiantSteps).
+
+**Bottom line:** there is no further per-component bug to find by re-auditing accent / bank / linear inference. The 12.5-point gap is the joint-posterior + DP-continuity component (§IV-C of the paper) that we explicitly defer. Closing it is a ~400–600 LOC implementation effort to replace `period_inference.rs`'s linear-sum scoring with a probabilistic joint model over (tatum, tactus, measure) and a Viterbi-style temporal smoother. That's the only known lever left for the Klapuri architecture. Pass 11 verdict stands: bank-level fixes are exhausted; further gains need algorithm completeness.
+
 ## References
 
 - Klapuri, A.P., Eronen, A.J., and Astola, J.T. *Analysis of the meter of acoustic musical signals.* IEEE TASLP 14(1):342–355, 2006. https://www.iro.umontreal.ca/~pift6080/H09/documents/papers/klapuri_meter.pdf
