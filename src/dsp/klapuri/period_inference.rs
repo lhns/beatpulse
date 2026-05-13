@@ -17,6 +17,7 @@
 //! The winning τ is the tactus (one beat). Phase comes from the
 //! winning resonator's delay-line state — see [`super::phase`].
 
+use crate::dsp::klapuri::joint_posterior::{ForwardFilter, JointStateSpace, JointWeights};
 use crate::dsp::klapuri::resonators::ResonatorBank;
 
 /// Configurable weights for the period-score combination. Defaults
@@ -57,8 +58,19 @@ pub struct PeriodInference {
     pub weights: InferenceWeights,
     /// OSS rate (samples/sec) used to derive BPM from period.
     oss_rate: f32,
-    /// Reusable scratch for the per-candidate score vector.
+    /// Per-tactus marginal log-posterior (log-sum-exp over joint
+    /// states sharing that tactus). Length = `bank.periods().len()`.
     score_buf: Vec<f32>,
+    /// Per-state log-likelihood scratch — sized to the joint state
+    /// space at first `select()` call.
+    log_lik_buf: Vec<f32>,
+    /// Joint state space over (tactus, k_tatum, k_measure), built
+    /// lazily from the bank's period range.
+    state_space: Option<JointStateSpace>,
+    /// Online forward filter — built alongside `state_space` and
+    /// updated once per inference cycle. Provides temporal continuity
+    /// (Phase D of pass 13).
+    forward_filter: Option<ForwardFilter>,
 }
 
 impl PeriodInference {
@@ -67,82 +79,102 @@ impl PeriodInference {
             weights: InferenceWeights::default(),
             oss_rate,
             score_buf: Vec::new(),
+            log_lik_buf: Vec::new(),
+            state_space: None,
+            forward_filter: None,
         }
     }
 
-    /// Score every candidate τ in `bank.periods()`. Returns the
+    /// Reset all internal state. Drops the cached state space and
+    /// forward-filter posterior so the next track starts fresh.
+    pub fn reset(&mut self) {
+        self.state_space = None;
+        self.forward_filter = None;
+    }
+
+    fn ensure_state_space(&mut self, bank_periods: &[usize]) {
+        let needs_rebuild = match &self.state_space {
+            None => true,
+            Some(ss) => {
+                let (lo, hi) = ss.tactus_range();
+                lo >= bank_periods.len() || hi > bank_periods.len()
+            }
+        };
+        if needs_rebuild {
+            let jw = JointWeights {
+                prior_centre_bpm: self.weights.prior_centre_bpm,
+                prior_sigma: self.weights.prior_sigma,
+                ..JointWeights::default()
+            };
+            let ss = JointStateSpace::new(bank_periods, self.oss_rate, jw);
+            self.forward_filter = Some(ForwardFilter::new(&ss));
+            self.state_space = Some(ss);
+        }
+    }
+
+    /// Score every candidate τ in `bank.periods()` and return the
     /// `(period_index, period_samples, period_frac, bpm)` of the
-    /// winner. `period_frac` is the parabolic-interpolated peak
-    /// position in OSS frames — sub-frame resolution that prevents
-    /// integer-τ quantisation from drifting the locked beat schedule
-    /// off the truth tempo by ~0.5–1 ms/beat.
+    /// winning tactus. `period_frac` is the parabolic-interpolated
+    /// peak position in OSS frames — sub-frame resolution that
+    /// prevents integer-τ quantisation from drifting the locked beat
+    /// schedule by ~0.5–1 ms/beat (pass-11 fix).
     pub fn select(&mut self, bank: &mut ResonatorBank) -> Option<(usize, usize, f32, f32)> {
         let periods = bank.periods().to_vec();
         let energies = bank.total_energies().to_vec();
         if periods.is_empty() {
             return None;
         }
-        self.score_buf.resize(periods.len(), 0.0);
-        let w = &self.weights;
-        let centre_log = w.prior_centre_bpm.ln();
-        let sigma = w.prior_sigma.max(1e-6);
-
-        // Look up energy at a candidate period via the periods slice.
-        // Returns 0 if out of range.
-        let lookup = |target: usize| -> f32 {
-            match periods.binary_search(&target) {
-                Ok(idx) => energies[idx],
-                Err(_) => 0.0,
-            }
-        };
-
-        for (i, &tau) in periods.iter().enumerate() {
-            let e_t = energies[i];
-            let e_th2 = lookup(tau / 2);
-            let e_th3 = if tau >= 3 { lookup(tau / 3) } else { 0.0 };
-            let e_m2 = lookup(tau * 2);
-            let e_m3 = lookup(tau * 3);
-            let e_m4 = lookup(tau * 4);
-
-            let raw = w.w_tactus * e_t
-                + w.w_tatum_half * e_th2
-                + w.w_tatum_third * e_th3
-                + w.w_measure_2 * e_m2
-                + w.w_measure_3 * e_m3
-                + w.w_measure_4 * e_m4;
-
-            // BPM-prior in log-BPM space.
-            let bpm = 60.0 * self.oss_rate / tau as f32;
-            let z = (bpm.ln() - centre_log) / sigma;
-            // Gaussian density (up to a constant): exp(-z²/2).
-            let prior = (-0.5 * z * z).exp();
-            self.score_buf[i] = raw * prior;
+        let n = periods.len();
+        self.ensure_state_space(&periods);
+        let ss = self.state_space.as_ref()?;
+        if ss.n_states() == 0 {
+            return None;
         }
 
-        let (best_i, _) = self
+        // Phase D: joint posterior over (tactus, k_tatum, k_measure)
+        // run through the online forward filter for temporal
+        // continuity. Per-state log-likelihood from the bank's
+        // post-DC-removal energies → forward-step update against the
+        // prior log-posterior → per-tactus marginal log-sum-exp.
+        self.log_lik_buf.resize(ss.n_states(), 0.0);
+        ss.log_likelihood(&energies, &mut self.log_lik_buf);
+
+        let ff = self.forward_filter.as_mut()?;
+        ff.update(&self.log_lik_buf, ss.log_prior());
+
+        self.score_buf.resize(n, f32::NEG_INFINITY);
+        ff.marginalise_per_tactus(ss, n, &mut self.score_buf);
+
+        // Argmax in log-space.
+        let (best_i, &best_score) = self
             .score_buf
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())?;
+        if !best_score.is_finite() {
+            return None;
+        }
         let tau = periods[best_i];
 
-        // Parabolic peak interpolation around best_i, in units of
-        // period-array index. Adjacent periods in `default_period_range`
-        // differ by exactly 1 OSS frame, so the index offset is also
-        // the fractional-τ offset. Clamp |offset| ≤ 0.5 so we never
-        // cross a neighbour's peak.
-        let n = self.score_buf.len();
+        // Parabolic peak interpolation in log-score space. Same
+        // formula as the linear case — the score is concave around
+        // the peak in either representation; log-domain just makes
+        // the dynamic range tractable for log-sum-exp.
         let tau_frac = if best_i > 0 && best_i + 1 < n {
             let s_lo = self.score_buf[best_i - 1];
             let s_mid = self.score_buf[best_i];
             let s_hi = self.score_buf[best_i + 1];
-            let denom = s_lo - 2.0 * s_mid + s_hi;
-            let offset = if denom.abs() > 1e-12 {
-                (0.5 * (s_lo - s_hi) / denom).clamp(-0.5, 0.5)
+            if s_lo.is_finite() && s_hi.is_finite() {
+                let denom = s_lo - 2.0 * s_mid + s_hi;
+                let offset = if denom.abs() > 1e-12 {
+                    (0.5 * (s_lo - s_hi) / denom).clamp(-0.5, 0.5)
+                } else {
+                    0.0
+                };
+                tau as f32 + offset
             } else {
-                0.0
-            };
-            tau as f32 + offset
+                tau as f32
+            }
         } else {
             tau as f32
         };
@@ -150,6 +182,64 @@ impl PeriodInference {
         let bpm = 60.0 * self.oss_rate / tau_frac;
         Some((best_i, tau, tau_frac, bpm))
     }
+}
+
+// Pass-12 attempted to wire the joint (tatum, tactus, measure)
+// posterior + an online forward filter through `select()`. Both
+// regressed on Ballroom (joint per-frame: F 0.635 → 0.476;
+// linear-sum + forward filter: F 0.635 → 0.603). The joint state
+// space + likelihood/marginalisation lives in
+// [`super::joint_posterior`] as a research artifact + future-work
+// hook; the forward-step kernel below is preserved unattached for
+// when the bank's evidence structure (or a different observation
+// model) makes either viable.
+#[allow(dead_code)]
+fn forward_step(prev: &[f32], log_obs: &[f32], periods: &[usize]) -> Vec<f32> {
+    const P_STAY: f32 = 0.85;
+    const P_DRIFT: f32 = 0.05;
+    const P_OCTAVE: f32 = 0.025;
+    let log_p_stay = P_STAY.ln();
+    let log_p_drift = P_DRIFT.ln();
+    let log_p_octave = P_OCTAVE.ln();
+    let n = periods.len();
+    let mut out = vec![f32::NEG_INFINITY; n];
+    for (j, &tau_j) in periods.iter().enumerate() {
+        let mut log_in: [f32; 5] = [f32::NEG_INFINITY; 5];
+        let mut k = 0;
+        log_in[k] = prev[j] + log_p_stay;
+        k += 1;
+        if j > 0 {
+            log_in[k] = prev[j - 1] + log_p_drift;
+            k += 1;
+        }
+        if j + 1 < n {
+            log_in[k] = prev[j + 1] + log_p_drift;
+            k += 1;
+        }
+        if let Ok(i) = periods.binary_search(&(tau_j / 2)) {
+            if i != j {
+                log_in[k] = prev[i] + log_p_octave;
+                k += 1;
+            }
+        }
+        if let Ok(i) = periods.binary_search(&(tau_j * 2)) {
+            if i != j {
+                log_in[k] = prev[i] + log_p_octave;
+                k += 1;
+            }
+        }
+        let m = log_in[..k]
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        if m > f32::NEG_INFINITY {
+            let s: f32 = log_in[..k].iter().map(|&x| (x - m).exp()).sum();
+            out[j] = log_obs[j] + m + s.ln();
+        } else {
+            out[j] = log_obs[j];
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -21,9 +21,26 @@ use std::sync::Arc;
 use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 
-/// Number of accent channels. Klapuri uses 4 (low / low-mid / mid /
-/// high) collapsed from a finer mel filterbank; we go straight to 4.
+/// Number of accent **output** channels. Klapuri 2006 §III feeds the
+/// comb-filter bank from 4 broad channels (low / low-mid / mid /
+/// high), but each is a sum of finer-grained narrow bands that get
+/// log-compressed and differentiated *individually* before the cross-
+/// band sum. See [`N_NARROW_BANDS`] for the inner filterbank size.
 pub const N_BANDS: usize = 4;
+
+/// Number of **narrow** mel bands processed independently by the
+/// per-band log-compression and differential stages. Each output
+/// channel is the sum of `N_NARROW_BANDS / N_BANDS = 9` narrow bands
+/// after differentiation. Paper-faithful design — collapsing to 4
+/// channels *before* log+diff (the pass-≤11 approach) lets a single
+/// loud transient in one frequency dominate the channel's accent and
+/// drown out weaker periodic content, breaking the joint posterior's
+/// expected evidence structure.
+pub const N_NARROW_BANDS: usize = 36;
+/// How many narrow bands fold into each output channel. Compile-time
+/// constant — fails if `N_NARROW_BANDS` isn't a multiple of `N_BANDS`.
+pub const NARROW_PER_BROAD: usize = N_NARROW_BANDS / N_BANDS;
+const _: () = assert!(N_NARROW_BANDS == NARROW_PER_BROAD * N_BANDS);
 
 /// Default STFT analysis parameters (matches Klapuri's "23 ms window,
 /// 5.8 ms hop" at 44.1 kHz).
@@ -46,26 +63,42 @@ const DC_ALPHA: f32 = 0.97;
 /// The sustained-energy term keeps the accent non-zero on tracks with
 /// long sustained notes (waltz strings, tango bandoneon, sustained
 /// chords) where pure spectral flux goes to ~0.
-const ACCENT_W: f32 = 0.9;
+const ACCENT_W: f32 = 0.8;
 
 /// Compute mel-warped band boundaries (in FFT-bin indices) for a
-/// `fft_size`-point analysis at `sr`. Splits 0 .. sr/2 into `N_BANDS`
-/// equal-mel intervals.
-fn mel_band_bins(sr: u32, fft_size: usize) -> [(usize, usize); N_BANDS] {
+/// `fft_size`-point analysis at `sr`. Splits 0 .. sr/2 into
+/// `N_NARROW_BANDS` equal-mel intervals. Narrow-band edition — used
+/// for the per-band log/diff stage. Output channels group `NARROW_PER_BROAD`
+/// adjacent narrow bands.
+fn narrow_band_bins(sr: u32, fft_size: usize) -> [(usize, usize); N_NARROW_BANDS] {
     let nyquist = sr as f32 / 2.0;
     let mel = |f: f32| 2595.0 * (1.0 + f / 700.0).log10();
     let inv_mel = |m: f32| 700.0 * (10f32.powf(m / 2595.0) - 1.0);
     let mel_max = mel(nyquist);
-    let mut out = [(0usize, 0usize); N_BANDS];
+    let mut out = [(0usize, 0usize); N_NARROW_BANDS];
     let bin_per_hz = fft_size as f32 / sr as f32;
     for (b, slot) in out.iter_mut().enumerate() {
-        let m_lo = mel_max * b as f32 / N_BANDS as f32;
-        let m_hi = mel_max * (b + 1) as f32 / N_BANDS as f32;
+        let m_lo = mel_max * b as f32 / N_NARROW_BANDS as f32;
+        let m_hi = mel_max * (b + 1) as f32 / N_NARROW_BANDS as f32;
         let f_lo = inv_mel(m_lo);
         let f_hi = inv_mel(m_hi);
         let bin_lo = (f_lo * bin_per_hz) as usize;
         let bin_hi = ((f_hi * bin_per_hz) as usize).min(fft_size / 2 + 1);
         *slot = (bin_lo, bin_hi.max(bin_lo + 1));
+    }
+    out
+}
+
+/// Coarse-grained band boundaries — group of `NARROW_PER_BROAD` narrow
+/// bands per output channel. Returned by [`MultiBandAccent::band_bins`]
+/// for downstream consumers that need to know the output channel's
+/// frequency range (the lo of the first narrow band, hi of the last).
+fn broad_band_bins(narrow: &[(usize, usize); N_NARROW_BANDS]) -> [(usize, usize); N_BANDS] {
+    let mut out = [(0usize, 0usize); N_BANDS];
+    for (b, slot) in out.iter_mut().enumerate() {
+        let lo = narrow[b * NARROW_PER_BROAD].0;
+        let hi = narrow[(b + 1) * NARROW_PER_BROAD - 1].1;
+        *slot = (lo, hi);
     }
     out
 }
@@ -88,12 +121,20 @@ pub struct MultiBandAccent {
     /// committed to `window_buf`.
     pending: Vec<f32>,
 
+    /// Output-channel band bins (one per broad channel, the union of
+    /// its narrow members). Exposed via `band_bins()` for callers
+    /// that just want the broad-band frequency layout.
     band_bins: [(usize, usize); N_BANDS],
-    /// DC tracker per channel.
-    dc: [f32; N_BANDS],
-    /// Previous compressed-and-DC-removed value per channel (for the
-    /// HWR differential).
-    prev: [f32; N_BANDS],
+    /// Narrow-band bins — the actual analysis granularity. Each
+    /// narrow band gets its own log-compression + DC tracker +
+    /// differential, then `NARROW_PER_BROAD` adjacent narrow bands
+    /// sum into one output channel.
+    narrow_bins: [(usize, usize); N_NARROW_BANDS],
+    /// Per-narrow-band DC tracker.
+    narrow_dc: [f32; N_NARROW_BANDS],
+    /// Per-narrow-band previous compressed-and-DC-removed value
+    /// (state for the HWR differential).
+    narrow_prev: [f32; N_NARROW_BANDS],
 
     /// Most recently produced accent frames. Drained / inspected by
     /// the caller via `process_block`'s callback. We don't persist
@@ -131,9 +172,13 @@ impl MultiBandAccent {
             window_buf: vec![0.0; fft_size],
             pending_count: 0,
             pending: vec![0.0; hop_size],
-            band_bins: mel_band_bins(sr, fft_size),
-            dc: [0.0; N_BANDS],
-            prev: [0.0; N_BANDS],
+            band_bins: {
+                let narrow = narrow_band_bins(sr, fft_size);
+                broad_band_bins(&narrow)
+            },
+            narrow_bins: narrow_band_bins(sr, fft_size),
+            narrow_dc: [0.0; N_NARROW_BANDS],
+            narrow_prev: [0.0; N_NARROW_BANDS],
             _phantom_frames: (),
         }
     }
@@ -159,8 +204,8 @@ impl MultiBandAccent {
         self.window_buf.fill(0.0);
         self.pending.fill(0.0);
         self.pending_count = 0;
-        self.dc = [0.0; N_BANDS];
-        self.prev = [0.0; N_BANDS];
+        self.narrow_dc = [0.0; N_NARROW_BANDS];
+        self.narrow_prev = [0.0; N_NARROW_BANDS];
     }
 
     /// Push `audio` samples through the accent pipeline; for each
@@ -196,11 +241,19 @@ impl MultiBandAccent {
             &mut self.fft_out,
             &mut self.fft_scratch,
         );
-        // Per-band power → μ-law compress → DC remove → weighted
-        // composition of HWR-diff + sustained log-power.
-        let mut accent = [0.0f32; N_BANDS];
+
+        // Paper-faithful per-narrow-band stage (Klapuri 2006 §III).
+        // Each of the 36 narrow bands runs its own log-compression →
+        // DC removal → HWR differential, BEFORE summing into broad
+        // channels. This keeps a single loud transient in one
+        // frequency from drowning out concurrent periodic content in
+        // neighbouring bands (the cross-band sum after per-band
+        // nonlinearities preserves more independent evidence than the
+        // pre-sum nonlinearity used in passes ≤ 11).
         let mu_norm = (1.0_f32 + LOG_MU).ln();
-        for (b, &(lo, hi)) in self.band_bins.iter().enumerate() {
+        let mut narrow_hwr_diff = [0.0f32; N_NARROW_BANDS];
+        let mut narrow_sustained = [0.0f32; N_NARROW_BANDS];
+        for (b, &(lo, hi)) in self.narrow_bins.iter().enumerate() {
             let mut power = 0.0f32;
             for c in &self.fft_out[lo..hi] {
                 power += c.norm_sqr();
@@ -208,18 +261,37 @@ impl MultiBandAccent {
             // μ-law: log(1 + μ·p) / log(1 + μ). On power, not
             // magnitude (Klapuri 2006 §III).
             let log_power = (1.0 + LOG_MU * power).ln() / mu_norm;
-            // Leaky-integrator DC tracker: dc tracks slow-moving mean.
-            self.dc[b] = DC_ALPHA * self.dc[b] + (1.0 - DC_ALPHA) * log_power;
-            let after_dc = log_power - self.dc[b];
-            let diff = after_dc - self.prev[b];
-            self.prev[b] = after_dc;
-            // Weighted accent: spectral-flux-style HWR-diff (W) + a
-            // small contribution from sustained DC-removed power
-            // (1-W) so tracks with long sustained notes still feed
-            // the comb-filter bank.
-            let hwr_diff = diff.max(0.0);
-            let sustained = after_dc.max(0.0);
-            accent[b] = ACCENT_W * hwr_diff + (1.0 - ACCENT_W) * sustained;
+            // Per-narrow-band DC tracker (leaky integrator).
+            self.narrow_dc[b] = DC_ALPHA * self.narrow_dc[b] + (1.0 - DC_ALPHA) * log_power;
+            let after_dc = log_power - self.narrow_dc[b];
+            let diff = after_dc - self.narrow_prev[b];
+            self.narrow_prev[b] = after_dc;
+            narrow_hwr_diff[b] = diff.max(0.0);
+            narrow_sustained[b] = after_dc.max(0.0);
+        }
+
+        // Sum NARROW_PER_BROAD adjacent narrow bands into each output
+        // channel, then apply the W / (1-W) weighting on the SUM.
+        // Output channel order matches `band_bins`.
+        let mut accent = [0.0f32; N_BANDS];
+        for (out_b, slot) in accent.iter_mut().enumerate() {
+            let start = out_b * NARROW_PER_BROAD;
+            let end = start + NARROW_PER_BROAD;
+            let mut hwr_sum = 0.0f32;
+            let mut sus_sum = 0.0f32;
+            for k in start..end {
+                hwr_sum += narrow_hwr_diff[k];
+                sus_sum += narrow_sustained[k];
+            }
+            // No 1/N scaling — the sum of 9 narrow-band HWR-diffs
+            // is naturally larger than the single broadband HWR-diff
+            // it replaces. Downstream stages (per-band DC removal in
+            // `KlapuriTracker::accent_step`, the bank's `(1-α)/(1+α)`
+            // normalisation, and the inference's BPM prior) are all
+            // scale-invariant in the relevant sense — the ratios
+            // between τ values' bank energies are what drives
+            // selection.
+            *slot = ACCENT_W * hwr_sum + (1.0 - ACCENT_W) * sus_sum;
         }
         accent
     }
@@ -249,13 +321,21 @@ mod tests {
     /// produces bins covering the full range monotonically.
     #[test]
     fn mel_band_bins_cover_full_range() {
-        let bins = mel_band_bins(44_100, FFT_SIZE);
-        assert_eq!(bins[0].0, 0);
-        for b in 1..N_BANDS {
-            // Bands are monotonically increasing.
-            assert!(bins[b].0 >= bins[b - 1].1.saturating_sub(1));
+        let narrow = narrow_band_bins(44_100, FFT_SIZE);
+        assert_eq!(narrow[0].0, 0);
+        for b in 1..N_NARROW_BANDS {
+            // Narrow bands are monotonically increasing.
+            assert!(narrow[b].0 >= narrow[b - 1].1.saturating_sub(1));
         }
-        assert!(bins[N_BANDS - 1].1 <= FFT_SIZE / 2 + 1);
+        assert!(narrow[N_NARROW_BANDS - 1].1 <= FFT_SIZE / 2 + 1);
+
+        // Broad bins (the group-sums) also cover the full range.
+        let broad = broad_band_bins(&narrow);
+        assert_eq!(broad[0].0, 0);
+        for b in 1..N_BANDS {
+            assert!(broad[b].0 >= broad[b - 1].1.saturating_sub(1));
+        }
+        assert!(broad[N_BANDS - 1].1 <= FFT_SIZE / 2 + 1);
     }
 
     /// Feed a 120 BPM kick track; every band should produce positive

@@ -29,6 +29,8 @@
 //! integration go/no-go gate per the plan.
 
 pub mod accent;
+pub mod downbeat;
+pub mod joint_posterior;
 pub mod period_inference;
 pub mod phase;
 pub mod resonators;
