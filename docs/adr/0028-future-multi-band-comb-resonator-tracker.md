@@ -429,6 +429,50 @@ Ten variations exhausted; baseline for comparison is pass 14 fix 2 (`bae8b48`) F
 
 **Conclusion (architectural ceiling).** None of the ten variations beat the Fix 2 baseline on F or TA1. The paper's eq. 17 likelihood (eq. 41 polynomial) requires training-set histograms we lack, and approximating it with hand-picked `(a, b)` or log-domain substitutes regresses badly because the Fix 2 Gaussian log-LR is already a reasonable parametric stand-in for `(p_matched / p_unmatched)`. The remaining **−0.028 TA1 gap to paper-Klapuri (0.632 vs our 0.604)** is consistent with the offline-Viterbi-vs-online-forward-filter architectural ceiling already noted: paper does both period and phase via non-causal Viterbi over the full track; we run a causal forward filter for real-time use. The 218-track doubles trap on Ballroom (states at 2× truth tempo) is the structural cost of that real-time constraint — wrong-octave tactus states lookup their measure in the bank's true-tactus range, creating a posterior symmetry that no inference-layer tweak resolves cleanly. We accept this ceiling and stop iterating on TA1.
 
+## Pass 15 — trained eq. 41 polynomial likelihood (NOT shipped)
+
+A multi-pass investigation (15.1 → 15.5) implemented and trained the paper's eq. 41 likelihood-ratio polynomial `(p_matched / p_unmatched)(s) = a + b·s` per pulse level from labelled Ballroom data, with proper 5-fold cross-validation, then iterated through every plausible variant. **All variants either matched or regressed against the Fix 2 Gaussian log-LR baseline on real Ballroom audio.** Full details + commits live on the dedicated experiment branches; this section summarises the empirical conclusion.
+
+**Variants tested (all regress on Ballroom or are equivalent to baseline):**
+
+| Variant | Synthetic F | Ballroom F | Δ vs `bae8b48` (F=0.694) | Branch |
+|---|---|---|---|---|
+| Pass-15 polynomial (summed-s, raw) | 0.626 | 0.441 | −0.253 | `klapuri/eq41-training-experiment` |
+| Per-channel polynomial (separate (a,b)) | 0.624 | (skipped) | — | `klapuri/eq41-training-experiment` |
+| Non-parametric per-bin LR table | 0.526 | (skipped) | — | `klapuri/eq41-training-experiment` |
+| Z-scored summed-s polynomial | 0.605 | 0.432 | −0.262 | `klapuri/principled-likelihood-investigation` |
+| Paper-exact (per-channel s, shared (a,b), summed log) | 0.580 | (skipped) | — | `klapuri/principled-likelihood-investigation` |
+| Beam search (top-K state pruning) | 0.734 (k=125) | (skipped) | 0.000 | `klapuri/principled-likelihood-investigation` |
+| Trained two-Gaussian likelihood | 0.480 | (skipped) | — | `klapuri/trained-gaussian-likelihood` |
+| W₀ time-constant sweep (Gaussian baseline) | 0.711 (all values) | (skipped) | n/a | `klapuri/bank-w0-sweep` |
+| **DFT-tatum (paper eq. 10)** | 0.635 | (skipped) | — | `klapuri/dft-tatum` |
+| **Experiment A: DFT-tatum + summed-s tactus/measure** | **0.757** | **0.441** | **−0.253** | `klapuri/dft-tatum-experiments` |
+| Experiment B: DFT-tatum + z-scored summed-s | 0.751 | (skipped) | — | `klapuri/dft-tatum-experiments` |
+| Experiment A+B (raw + z-score added) | 0.750 | (skipped) | — | `klapuri/dft-tatum-experiments` |
+| **Pass 15.5 ensemble: Gaussian log-LR + Experiment A polynomial** | **0.734** | (skipped — synthetic = baseline) | ≈ 0 | `klapuri/dft-tatum-experiments` |
+
+**Verified-not-speculated structural findings:**
+
+- The paper's eq. 41 polynomial form is **mathematically wrong for our pipeline's empirical `p(s|matched) / p(s|unmatched)` distributions**: matched and unmatched populations overlap heavily in the bulk (modes both around s≈2) with discrimination only in the sparse tail (log-LR ≈ 0 in bins 0-4, ≈ +4 at bin 8+). The true log-LR shape is approximately a step function; no linear function — in raw s, z-scored s, per-channel s, or paper-exact configuration — can represent it. Histogram analysis on `tests/data/klapuri_eq41/fold_0_histograms.json` is the load-bearing evidence.
+- The DFT-tatum feature (paper eq. 10) **does** improve discrimination on synthetic clean-click corpora (Δ +0.05–0.10 F over raw-s tatum) — but on real Ballroom audio its Goertzel-magnitude polynomial coefficients fit to (a≈1.03, b≈-0.002): degenerate, no slope, no discrimination. The DFT-tatum's win was a clean-click corpus artefact.
+- **The polynomial-replaces-Gaussian path is dead** (synthetic-only wins, Ballroom regression).
+- **The polynomial-added-to-Gaussian path is neutral** (pass 15.5 ensemble): the Gaussian's per-state dynamic range (~7 units) dwarfs the polynomial's (~4 units), so the polynomial term gets voted down per state.
+- Paper §III-D ablation independently confirms: the paper's own ablation says eq. 41 alone (without temporal continuity HMM) "still performs moderately." So Viterbi is not load-bearing for eq. 41 in their pipeline; the gap on our pipeline is bank-statistic-dependent (eq. 41 fits their bank's `s` distribution, not ours).
+
+**Final close-out.** The Fix 2 Gaussian log-LR baseline at `bae8b48` (F=0.694, AMLt=0.499, TA1=0.604, TA2=0.929) **beats aubio on all four Ballroom metrics** and is the verified shipping candidate. All polynomial-family variants are research records on their respective branches; none ship. Future work that could plausibly improve over `bae8b48` requires either (a) offline Viterbi (breaks real-time constraint), (b) the paper's per-channel rhythmic-template phase HMM (paper eq. 27/32 — substantial new work in `phase.rs`/`downbeat.rs`), or (c) a fundamentally different bank structure that produces well-separated `p(s|matched)` / `p(s|unmatched)` distributions where the eq. 41 polynomial would actually work.
+
+## Decision (default tracking mode)
+
+**Klapuri Gaussian log-LR (`bae8b48`) ships as the new default `TrackingMode`.** Aubio remains selectable in the dropdown for users who prefer it.
+
+| Tracker | Branch / commit | F | AMLt | TA1 | TA2 |
+|---|---|---|---|---|---|
+| Aubio (was-default) | `74c06e3` | 0.590 | 0.459 | 0.592 | 0.777 |
+| **Klapuri Gaussian baseline (new default)** | `bae8b48` | **0.694** | **0.499** | **0.604** | **0.929** |
+| Δ over aubio | | **+0.104** | **+0.040** | **+0.012** | **+0.152** |
+| Klapuri pass 11 (was opt-in) | `74c06e3` | 0.635 | 0.430 | 0.507 | 0.785 |
+| Paper-Klapuri (Gouyon 2006) | n/a | — | — | 0.632 | 0.910 |
+
 ## References
 
 - Klapuri, A.P., Eronen, A.J., and Astola, J.T. *Analysis of the meter of acoustic musical signals.* IEEE TASLP 14(1):342–355, 2006. https://www.iro.umontreal.ca/~pift6080/H09/documents/papers/klapuri_meter.pdf
