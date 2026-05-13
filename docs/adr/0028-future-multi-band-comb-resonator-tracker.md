@@ -408,6 +408,27 @@ Tried during pass 14 audit, regressed or no improvement, reverted on the branch:
 - **Consistency penalty `−β·max(0, e_m − e_t)`** (pass 14, not committed): β=4/20 — barely fires (energies satisfy condition only on a few tracks).
 - **Hard rejection when e_m > 1.2·e_t** (pass 14, not committed): doesn't trigger (typical e_m / e_t ratios on real audio < 1.2 even on doubled tracks).
 
+## Pass 14 fix 3 — paper eq. 17 likelihood + W₀ normalisation (NOT shipped)
+
+Per the pass-14 plan, the last unimplemented audit-table item was the paper-faithful resonator normalisation `s(τ,n) = r̂(τ,n)/W₀(n)` (paper §II-B eq. 8) combined with the paper's joint-density observation likelihood `p(s | τ_A, τ_B, τ_C)` (paper §II-C eq. 17 / Appendix eq. 41). Re-extracted from the Eronen 2009 PhD thesis: eq. 41 is `(p_matched / p_unmatched)(s) = a + b·s` — a first-order polynomial whose `(a, b)` coefficients are **learned from training-set histograms** that we do not have.
+
+Ten variations exhausted; baseline for comparison is pass 14 fix 2 (`bae8b48`) F=0.694 / AMLt=0.499 / TA1=0.604 / TA2=0.929. Each variation discarded after measurement; none committed.
+
+| Variation | F | TA1 | Notes |
+|---|---|---|---|
+| Paper eq. 41 with `(a,b)=(0.5, 1.0)` + `/W₀` | 0.401 | ~0.05 | catastrophic — bounded `s(τ)` statistics swamped by `(a+b·s)` ratio with untrained coefficients |
+| Eq. 41 `(a,b)=(0.1, 5.0)` + `/W₀` | 0.407 | ~0.04 | same failure mode |
+| Eq. 41 `(a,b)=(0.0, 10.0)` + `/W₀` | 0.411 | ~0.05 | "" |
+| `log(s(τ))` per-level (no eq. 41) + `/W₀` | 0.388 | ~0.04 | log-domain doesn't fix the missing trained coefficients |
+| `log(1 + s(τ))` + `/W₀` | 0.395 | ~0.05 | "" |
+| Hybrid: keep Gaussian log-LR but apply `/W₀` to bank energies | 0.366 | 0.045 | confirmed initial Fix-3-standalone failure (Gaussian noise floor breaks on bounded inputs) |
+| Drop `/W₀`; use `log(s)` likelihood with raw `(1-α)/(1+α)` energies | 0.612 | 0.512 | small regression — log-domain alone is worse than Gaussian log-LR |
+| Drop `/W₀`; eq. 41 polynomial on raw energies | 0.598 | 0.488 | polynomial untrained coefficients hurt regardless of normalisation |
+| V5 anti-doubles: half-weight measure log-LR when measure τ ∈ tactus range | 0.690 | 0.603 | within noise of baseline (correct +3, doubles −3, but octave/half +0/−0 net) — not worth the complexity |
+| Combined V5 + extended priors | 0.687 | 0.598 | small regression |
+
+**Conclusion (architectural ceiling).** None of the ten variations beat the Fix 2 baseline on F or TA1. The paper's eq. 17 likelihood (eq. 41 polynomial) requires training-set histograms we lack, and approximating it with hand-picked `(a, b)` or log-domain substitutes regresses badly because the Fix 2 Gaussian log-LR is already a reasonable parametric stand-in for `(p_matched / p_unmatched)`. The remaining **−0.028 TA1 gap to paper-Klapuri (0.632 vs our 0.604)** is consistent with the offline-Viterbi-vs-online-forward-filter architectural ceiling already noted: paper does both period and phase via non-causal Viterbi over the full track; we run a causal forward filter for real-time use. The 218-track doubles trap on Ballroom (states at 2× truth tempo) is the structural cost of that real-time constraint — wrong-octave tactus states lookup their measure in the bank's true-tactus range, creating a posterior symmetry that no inference-layer tweak resolves cleanly. We accept this ceiling and stop iterating on TA1.
+
 ## References
 
 - Klapuri, A.P., Eronen, A.J., and Astola, J.T. *Analysis of the meter of acoustic musical signals.* IEEE TASLP 14(1):342–355, 2006. https://www.iro.umontreal.ca/~pift6080/H09/documents/papers/klapuri_meter.pdf
