@@ -80,11 +80,10 @@ pub enum CcValueMode {
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum TrackingMode {
     /// Aubio's `Tempo` object (autocorrelation-based beat tracker).
-    /// Default — F=0.59 / AMLt=0.46 / TA2=0.78 on Ballroom. Best
-    /// continuous-tracking metric (AMLt) of the available trackers,
-    /// which matters for visible light cueing — fewer "loses lock
-    /// mid-song" failures than Klapuri. Same per-block latency as
-    /// Reactive (single hop ≈ 11.6 ms at 44.1 kHz). See ADR-0027.
+    /// F=0.59 / AMLt=0.46 / TA1=0.59 / TA2=0.78 on Ballroom. Was the
+    /// default before ADR-0028; now selectable as a fallback. Same
+    /// per-block latency as Reactive (single hop ≈ 11.6 ms at
+    /// 44.1 kHz). See ADR-0027.
     #[name = "Aubio Tempo"]
     AubioTempo,
     /// Per-onset PLL feedback against `aubio::Onset` events. Lowest
@@ -99,16 +98,14 @@ pub enum TrackingMode {
     /// `AubioTempo` mistracks a particular full-mix source.
     #[name = "Lookahead Consensus"]
     LookaheadConsensus,
-    /// Klapuri 2006 multi-band comb-resonator tracker. F=0.63 /
-    /// AMLt=0.42 / TA2=0.79 on Ballroom — *beats aubio on F-measure
-    /// and TA2 by +0.04 / +0.01* (tighter beat alignment when
-    /// locked) but **trails on AMLt by 0.04** (loses lock more
-    /// often mid-song). Try it when AubioTempo's beat placement
-    /// feels slightly behind the music; stay on AubioTempo if you
-    /// see lights desync mid-song. Higher CPU cost (STFT + 4-band
-    /// accent + 150-resonator comb bank). Onset method / Sensitivity
-    /// have no effect — Klapuri's accent stage is internal. See
-    /// ADR-0028.
+    /// Klapuri 2006 multi-band comb-resonator tracker with joint
+    /// posterior over (tactus, tatum, measure) and per-cycle adaptive
+    /// Gaussian log-LR likelihood. Default since ADR-0028. F=0.694 /
+    /// AMLt=0.499 / TA1=0.604 / TA2=0.929 on Ballroom — beats aubio
+    /// on all four metrics (F +0.10, AMLt +0.04, TA1 +0.01,
+    /// TA2 +0.15). Higher CPU cost (STFT + 4-band accent +
+    /// 150-resonator comb bank). Onset method / Sensitivity have no
+    /// effect — Klapuri's accent stage is internal. See ADR-0028.
     #[name = "Klapuri"]
     Klapuri,
 }
@@ -223,7 +220,7 @@ impl Default for BeatpulseParams {
             .with_unit(" ms")
             .with_step_size(1.0),
 
-            tracking_mode: EnumParam::new("Tracking Mode", TrackingMode::AubioTempo),
+            tracking_mode: EnumParam::new("Tracking Mode", TrackingMode::Klapuri),
 
             lookahead_ms: FloatParam::new(
                 "Lookahead",
@@ -340,7 +337,7 @@ mod tests {
         assert_eq!(p.sensitivity.value(), 0.5);
         assert_eq!(p.tempo_stability.value(), 0.5);
         assert_eq!(p.latency_offset_ms.value(), 0.0);
-        assert_eq!(p.tracking_mode.value(), TrackingMode::AubioTempo);
+        assert_eq!(p.tracking_mode.value(), TrackingMode::Klapuri);
         assert_eq!(p.lookahead_ms.value(), 2000.0);
         assert_eq!(p.onset_method.value(), OnsetMethod::SpecFlux);
         assert_eq!(p.silence_threshold.value(), -50.0);
