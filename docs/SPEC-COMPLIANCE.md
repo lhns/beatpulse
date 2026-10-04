@@ -56,10 +56,10 @@ Last refreshed against `main` after commit `f6b212c`-area work.
 | Item                                | Status | Notes                                                    |
 |-------------------------------------|--------|----------------------------------------------------------|
 | Rust 2021, MSRV 1.75                 | ✅      | `Cargo.toml` `rust-version = "1.75"`.                    |
-| `nih-plug` pinned to a git commit    | ✅      | `28b149ec` (ADR-0008).                                   |
+| `nice-plug` from crates.io           | ✅      | Successor of nih-plug (ADR-0029).                        |
 | `aubio-rs` 0.2                       | ✅      |                                                          |
 | `rusty_link` 0.4                     | ✅      |                                                          |
-| `nih_plug_egui` for UI               | ✅      |                                                          |
+| `nice-plug-egui` for UI              | ✅      |                                                          |
 | `approx` dev-dep                     | ✅      |                                                          |
 | GPL-3 licensing                      | ✅      | `LICENSE` + headers in every `.rs` file (audited).       |
 | Project layout matches spec §4       | ✅      | Files in expected paths.                                 |

@@ -106,17 +106,17 @@ PLL.
 
 ## 4. Build environment
 
-- **Language**: Rust, edition 2021, MSRV 1.75.
-- **Plugin framework**: [`nih-plug`](https://github.com/robbert-vdh/nih-plug),
-  pinned to a recent commit (no crates.io release as of writing). Produces
-  VST3 and CLAP from a single codebase.
+- **Language**: Rust, edition 2021, MSRV 1.88.
+- **Plugin framework**: [`nice-plug`](https://codeberg.org/RustAudio/nice-plug),
+  the maintained successor of nih-plug (ADR-0029). Produces VST3 and CLAP
+  from a single codebase.
 - **DSP**: [`aubio-rs`](https://crates.io/crates/aubio-rs), thin Rust binding
   over the aubio C library.
 - **Ableton Link**: [`rusty_link`](https://crates.io/crates/rusty_link),
   Rust wrapper over Ableton's official `abl_link` C wrapper. Pulled in as
   a git or crates.io dependency; requires CMake ≥ 3.14 at build time to
   compile the bundled C++ Link sources.
-- **UI**: `nih_plug_egui` (egui-based, ships with nih-plug). Sufficient for
+- **UI**: `nice-plug-egui` (egui-based, ships with nice-plug). Sufficient for
   a 480×320 utility plugin.
 - **Testing**: standard `cargo test`, plus
   [`approx`](https://crates.io/crates/approx) for float comparisons.

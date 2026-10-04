@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted. Framework replaced by its successor nice-plug (ADR-0029).
 
 ## Context
 

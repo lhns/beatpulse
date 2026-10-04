@@ -12,7 +12,7 @@ publish = false
 fetch-datasets = ["dep:anyhow", "dep:flate2", "dep:indicatif", "dep:md-5", "dep:reqwest", "dep:sha2", "dep:tar"]
 
 [dependencies]
-nih_plug_xtask = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "28b149ec4d62757d0b448809148a0c3ca6e09a95" }
+nice-plug-xtask = "0.1.1"
 anyhow = { version = "1", optional = true }
 flate2 = { version = "1", optional = true }
 indicatif = { version = "0.18", optional = true }

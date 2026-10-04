@@ -15,7 +15,9 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use nih_plug::prelude::*;
+use nice_plug::midi::{Channel, Key, VoiceID};
+use nice_plug::prelude::*;
+use nice_plug_egui::{EguiEditor, EguiEditorState, RepaintNotifier};
 
 pub mod dsp;
 pub mod eval;
@@ -68,6 +70,7 @@ struct DspState {
 pub struct Beatpulse {
     params: Arc<BeatpulseParams>,
     shared: Arc<SharedState>,
+    editor_state: Arc<EguiEditorState>,
     dsp: Option<DspState>,
 }
 
@@ -76,6 +79,7 @@ impl Default for Beatpulse {
         Self {
             params: Arc::new(BeatpulseParams::default()),
             shared: Arc::new(SharedState::default()),
+            editor_state: ui::default_state(),
             dsp: None,
         }
     }
@@ -109,6 +113,7 @@ impl Plugin for Beatpulse {
     const MIDI_OUTPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
+    type Editor = EguiEditor<ui::BeatpulseEditor>;
     type SysExMessage = ();
     type BackgroundTask = ();
 
@@ -116,19 +121,20 @@ impl Plugin for Beatpulse {
         self.params.clone()
     }
 
-    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
         ui::editor(
-            self.params.editor_state.clone(),
+            self.editor_state.clone(),
+            RepaintNotifier::new(),
             self.params.clone(),
             self.shared.clone(),
         )
     }
 
-    fn initialize(
+    fn activate(
         &mut self,
         _audio_io_layout: &AudioIOLayout,
         buffer_config: &BufferConfig,
-        _context: &mut impl InitContext<Self>,
+        _context: &mut impl ActivateContext<Self>,
     ) -> bool {
         let sr = buffer_config.sample_rate;
         let max_block = buffer_config.max_buffer_size as usize;
@@ -145,7 +151,7 @@ impl Plugin for Beatpulse {
         ) {
             Ok(s) => s,
             Err(e) => {
-                nih_log!("BeatSource init failed: {e}");
+                nice_log!("BeatSource init failed: {e}");
                 return false;
             }
         };
@@ -299,8 +305,8 @@ impl Plugin for Beatpulse {
 
         // 7. Emit MIDI events to the host bus.
         for cmd in dsp.midi_out.drain(..) {
-            let event = midi_command_to_event(cmd);
-            context.send_event(event);
+            // Only fails if the host's event queue is full; dropping is fine.
+            let _ = context.try_send_event(midi_command_to_event(cmd));
         }
 
         // 8. Publish tempo to Link if locked + active + enabled.
@@ -378,7 +384,7 @@ fn update_dsp_from_params(dsp: &mut DspState, params: &BeatpulseParams) {
     // but UI mode changes are user-driven (rare; per ADR-0026/0027)
     // and the alternative — pre-allocating all three sources up-front
     // even when only one is in use — wastes memory and complicates
-    // state hygiene. nih-plug's `assert_process_allocs` may flag this;
+    // state hygiene. nice-plug's `assert_process_allocs` may flag this;
     // accepted trade-off.
     let mode = params.tracking_mode.value();
     if mode != dsp.last_mode {
@@ -425,9 +431,9 @@ fn midi_command_to_event(cmd: MidiCommand) -> NoteEvent<()> {
             velocity,
         } => NoteEvent::NoteOn {
             timing: sample_offset,
-            voice_id: None,
-            channel,
-            note,
+            voice_id: VoiceID::Wildcard,
+            channel: Channel::Number(channel),
+            key: Key::Number(note),
             velocity: velocity as f32 / 127.0,
         },
         MidiCommand::NoteOff {
@@ -436,9 +442,9 @@ fn midi_command_to_event(cmd: MidiCommand) -> NoteEvent<()> {
             note,
         } => NoteEvent::NoteOff {
             timing: sample_offset,
-            voice_id: None,
-            channel,
-            note,
+            voice_id: VoiceID::Wildcard,
+            channel: Channel::Number(channel),
+            key: Key::Number(note),
             velocity: 0.0,
         },
     }
@@ -468,5 +474,5 @@ impl Vst3Plugin for Beatpulse {
     ];
 }
 
-nih_export_clap!(Beatpulse);
-nih_export_vst3!(Beatpulse);
+nice_export_clap!(Beatpulse);
+nice_export_vst3!(Beatpulse);

@@ -10,7 +10,7 @@
 #[cfg(feature = "fetch-datasets")]
 mod fetch;
 
-fn main() -> nih_plug_xtask::Result<()> {
+fn main() -> nice_plug_xtask::Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(first) = args.first().cloned() {
         // `cargo xtask fetch <dataset> ...`
@@ -28,16 +28,16 @@ fn main() -> nih_plug_xtask::Result<()> {
             return run_fetch(&new_args);
         }
     }
-    nih_plug_xtask::main()
+    nice_plug_xtask::main()
 }
 
 #[cfg(feature = "fetch-datasets")]
-fn run_fetch(args: &[String]) -> nih_plug_xtask::Result<()> {
+fn run_fetch(args: &[String]) -> nice_plug_xtask::Result<()> {
     fetch::run(args)
 }
 
 #[cfg(not(feature = "fetch-datasets"))]
-fn run_fetch(_args: &[String]) -> nih_plug_xtask::Result<()> {
+fn run_fetch(_args: &[String]) -> nice_plug_xtask::Result<()> {
     Err(std::io::Error::other(
         "fetch subcommand requires the `fetch-datasets` feature. \
          Use `cargo xtask-fetch-{ballroom,giantsteps,smc} …` (see \

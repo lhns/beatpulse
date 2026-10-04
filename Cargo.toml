@@ -5,7 +5,7 @@ members = [".", "xtask"]
 name = "beatpulse"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 license = "GPL-3.0-or-later"
 description = "Real-time beat detector VST3/CLAP with Ableton Link tempo broadcast"
 repository = "https://github.com/lhns/beatpulse"
@@ -14,10 +14,11 @@ repository = "https://github.com/lhns/beatpulse"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# nih-plug is pinned to a git revision; bump intentionally.
-# Pinned to master @ 2026-05-08. See docs/adr/0008-rust-nih-plug-over-cpp-juce.md.
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "28b149ec4d62757d0b448809148a0c3ca6e09a95", features = ["assert_process_allocs"] }
-nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "28b149ec4d62757d0b448809148a0c3ca6e09a95" }
+# nice-plug: maintained successor of nih-plug. See ADR-0029.
+nice-plug = { version = "0.4.2", features = ["assert_process_allocs"] }
+nice-plug-egui = "0.5.1"
+# Must match nice-plug-egui's egui.
+egui = "0.36"
 aubio-rs = "0.2"
 rusty_link = "0.4"
 realfft = "3"
@@ -32,7 +33,7 @@ serde_json = "1"
 # UI snapshot testing. Feature-gated at the test-file level (not Cargo
 # feature) because dev-dependencies cannot be marked optional in stable
 # Cargo. Pays a one-time wgpu compile cost on `cargo test` builds.
-egui_kittest = { version = "0.31", features = ["wgpu", "snapshot"] }
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
 image = "0.25"
 # Multi-format audio decode for the dataset harnesses (GiantSteps is
 # MP3, Ballroom/SMC are WAV). Pure-Rust; isolated to test code via

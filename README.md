@@ -146,12 +146,6 @@ to compensate for the added analysis delay. See ADR-0026.
 
 ## Known limitations
 
-- **Resize via host chrome doesn't work; use the in-canvas drag handle.**
-  The editor has a drag-handle in its bottom-right corner — drag that
-  to grow the window. Dragging the host's plugin-window border may
-  show a resize cursor but the plugin contents stay put. This is an
-  upstream nih-plug limitation (`Editor` trait has no `on_size`
-  callback yet); see [`docs/adr/0022-host-driven-resize-unsupported.md`](docs/adr/0022-host-driven-resize-unsupported.md).
 - **Latency calibration is per-host, per-buffer.** Set `Latency offset`
   manually for your setup; the plugin doesn't auto-detect host buffer
   latency. See [`docs/adr/0023`](docs/adr/0023-latency-offset-user-tunable.md).

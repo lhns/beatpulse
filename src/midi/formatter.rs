@@ -10,7 +10,7 @@
 //! Converts pulse events from `PulseGenerator` into MIDI commands.
 //! See `BeatPulse-SPEC.md` §8.
 //!
-//! This module is deliberately independent of `nih_plug::midi::NoteEvent`
+//! This module is deliberately independent of `nice_plug::midi::NoteEvent`
 //! so unit tests don't need the full plugin host stack to build. The
 //! plugin's `process` adapts these commands to `NoteEvent`s at the boundary.
 
@@ -18,7 +18,7 @@ use crate::dsp::pulse_generator::PulseEvent;
 use crate::params::{CcValueMode, MsgType};
 
 /// MIDI command emitted by the formatter, ready to be wrapped in a
-/// `nih_plug::midi::NoteEvent` by the caller.
+/// `nice_plug::midi::NoteEvent` by the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MidiCommand {
     /// CC change. `channel` is 0-indexed (MIDI channel 1 == 0).
