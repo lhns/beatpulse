@@ -61,7 +61,7 @@ fn run_tempo(audio: &[f32], method: OnsetMode) -> Vec<f64> {
     let mut tempo = Tempo::new(method, BUF_SIZE, HOP_SIZE, TARGET_SR).expect("Tempo::new");
     let mut beats: Vec<f64> = Vec::new();
     let mut frame = 0usize;
-    for hop in audio.chunks_exact(HOP_SIZE) {
+    for hop in audio.as_chunks::<HOP_SIZE>().0 {
         if let Ok(out) = tempo.do_result(hop) {
             if out > 0.0 {
                 let abs = tempo.get_last();
