@@ -48,7 +48,17 @@ const RULE_COLOR: Color32 = Color32::from_rgb(50, 55, 62);
 const MIN_SIZE: LogicalSize<f32> = LogicalSize::new(MIN_W as f32, MIN_H as f32);
 
 pub fn default_state() -> Arc<EguiEditorState> {
-    EguiEditorState::from_size(LogicalSize::new(WINDOW_W as f32, WINDOW_H as f32), 1.0)
+    let size = LogicalSize::new(WINDOW_W as f32, WINDOW_H as f32);
+    // nice-plug-egui reports the size to the host at 100% until the window
+    // opens, so on a scaled display the host frame starts too small
+    // (nice-plug#75). Start from the physical size at the system DPI.
+    #[cfg(windows)]
+    let size = {
+        // SAFETY: no preconditions.
+        let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() };
+        nice_plug::editor::dpi::Size::Physical(size.to_physical(dpi as f64 / 96.0))
+    };
+    EguiEditorState::from_size(size, 1.0)
 }
 
 pub fn editor(
@@ -98,23 +108,32 @@ impl NiceEguiApp for BeatpulseEditor {
         let Some(gui_ctx) = &self.gui_ctx else {
             return;
         };
-        let setter = gui_ctx.param_setter();
-
-        // ResizableWindow paints a drag-handle at the bottom-right corner.
-        // See ADR-0020.
-        ResizableWindow::new("beatpulse-window")
-            .min_size(egui::Vec2::new(MIN_W as f32, MIN_H as f32))
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    build_panel(ui, &self.params, &self.shared, &setter);
-                });
-            });
+        editor_ui(ui, &self.params, &self.shared, &gui_ctx.param_setter());
 
         // Repaint at ~30 Hz so the BPM display, lock LED, peer count
         // and meter follow the audio thread.
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
     }
+}
+
+/// The full editor layout: the panel in a scroll area inside the
+/// resizable window. Public so snapshot tests render what the plugin shows.
+pub fn editor_ui(
+    ui: &mut egui::Ui,
+    params: &BeatpulseParams,
+    shared: &SharedState,
+    setter: &ParamSetter,
+) {
+    // ResizableWindow paints a drag-handle at the bottom-right corner.
+    // See ADR-0020.
+    ResizableWindow::new("beatpulse-window")
+        .min_size(egui::Vec2::new(MIN_W as f32, MIN_H as f32))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                build_panel(ui, params, shared, setter);
+            });
+        });
 }
 
 fn apply_visuals(ctx: &egui::Context) {

@@ -13,7 +13,9 @@ use std::sync::{Mutex, MutexGuard};
 
 use beatpulse::params::BeatpulseParams;
 use beatpulse::shared::{LinkStatus, SharedState};
-use beatpulse::ui::{build_panel, build_panel_with, PanelOptions, WINDOW_H, WINDOW_W};
+use beatpulse::ui::{
+    build_panel, build_panel_with, editor_ui, PanelOptions, MIN_H, WINDOW_H, WINDOW_W,
+};
 use egui_kittest::Harness;
 use nice_plug::prelude::{GuiContextInner, ParamPtr, ParamSetter, PluginApi, PluginState};
 
@@ -178,4 +180,23 @@ fn snapshot_default_panel() {
     harness.run();
     let image = harness.render().expect("render failed");
     save_png(&image, "ui-default");
+}
+
+/// The real editor layout at the minimum height.
+#[test]
+fn snapshot_editor_min_height() {
+    let _gpu = gpu_lock();
+    let params = BeatpulseParams::default();
+    let shared = SharedState::default();
+    let stub = StubGuiContext;
+    let setter = ParamSetter::new(&stub);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(WINDOW_W as f32, MIN_H as f32))
+        .wgpu()
+        .build_ui(|ui| editor_ui(ui, &params, &shared, &setter));
+
+    harness.run();
+    let image = harness.render().expect("render failed");
+    save_png(&image, "ui-editor-min-height");
 }

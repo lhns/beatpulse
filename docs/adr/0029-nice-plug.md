@@ -22,6 +22,10 @@ crates.io instead of the pinned nih-plug git revision.
 - `EguiNiceSettings::with_resize_hint` advertises host resize with a
   minimum of `MIN_W`×`MIN_H`, matching the corner handle's minimum.
 - The editor state lives on the plugin, not in `BeatpulseParams`.
+- On Windows the editor state starts at the physical size for the system
+  DPI. nice-plug-egui otherwise reports the size at 100% before the window
+  opens (nice-plug#75), and FL Studio sizes its frame from that, clipping
+  the content at 125%. Drop this once upstream fixes it.
 
 ## Consequences
 
@@ -39,5 +43,6 @@ crates.io instead of the pinned nih-plug git revision.
 
 - `cargo test` (incl. `tests/host_resize.rs` and the UI snapshots) and
   `cargo xtask bundle beatpulse --release`.
-- Pending: manual check in a host (border resize, DPI at 125%, loading
-  a project saved with the nih-plug build).
+- Manual, FL Studio VST3 on Windows at 125%: correct initial size, host
+  border resize.
+- Pending: loading a project saved with the nih-plug build.

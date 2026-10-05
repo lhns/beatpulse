@@ -25,6 +25,9 @@ realfft = "3"
 atomic_float = "1"
 parking_lot = "0.12"
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_UI_HiDpi"] }
+
 [dev-dependencies]
 approx = "0.5"
 hound = "3"           # WAV decode for dataset harness

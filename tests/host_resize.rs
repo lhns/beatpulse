@@ -33,3 +33,34 @@ fn host_resize_clamps_to_min_size() {
     let bigger = NativeSize::new(ui::WINDOW_W + 200, ui::WINDOW_H + 100);
     assert_eq!(hint.adjust_size(bigger, current, 1.0), bigger);
 }
+
+/// The host queries the size before the window opens; it must already be
+/// at the real DPI.
+#[cfg(windows)]
+#[test]
+fn initial_size_uses_system_dpi() {
+    use windows::Win32::UI::HiDpi::{
+        GetDpiForSystem, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    // DAWs are DPI-aware; an unaware process always sees 96 DPI.
+    // SAFETY: no preconditions; failure (already set) is harmless.
+    let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+
+    let editor = ui::editor(
+        ui::default_state(),
+        RepaintNotifier::new(),
+        Arc::new(BeatpulseParams::default()),
+        Arc::new(SharedState::default()),
+    )
+    .expect("editor");
+    // SAFETY: no preconditions.
+    let dpi = unsafe { GetDpiForSystem() };
+    let scale = dpi as f64 / 96.0;
+    assert_eq!(
+        editor.size(),
+        NativeSize::new(
+            (ui::WINDOW_W as f64 * scale).round() as u32,
+            (ui::WINDOW_H as f64 * scale).round() as u32,
+        )
+    );
+}
