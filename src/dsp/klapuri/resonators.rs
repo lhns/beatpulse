@@ -299,7 +299,7 @@ mod tests {
         assert!(
             rank < 5,
             "τ={target} should be top-5 by energy; rank={rank}, top-5 τ = {:?}",
-            &sorted[..5].iter().map(|&i| periods[i]).collect::<Vec<_>>()
+            sorted[..5].iter().map(|&i| periods[i]).collect::<Vec<_>>()
         );
         // Sub-harmonics (τ=43, τ=28) are expected to outrank τ=86 —
         // that's the comb's intrinsic behaviour. The "true" period

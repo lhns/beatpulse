@@ -289,7 +289,7 @@ mod tests {
 
         // Block that's silent for first 100 samples then audio.
         let mut block = vec![0.0f32; 100];
-        block.extend(std::iter::repeat(db_to_amp(-10.0)).take(50));
+        block.extend(std::iter::repeat_n(db_to_amp(-10.0), 50));
         let result = g.process_block(&block);
         let (t, offset) = result.expect("must observe transition");
         assert_eq!(t, Transition::SilentToActive);

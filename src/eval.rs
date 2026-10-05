@@ -37,7 +37,7 @@ fn match_beats(reference: &[f64], estimate: &[f64], tol: f64) -> (usize, usize, 
         while k < estimate.len() && estimate[k] <= r + tol {
             if !used_est[k] {
                 let d = (estimate[k] - r).abs();
-                if best.map_or(true, |(_, bd)| d < bd) {
+                if best.is_none_or(|(_, bd)| d < bd) {
                     best = Some((k, d));
                 }
             }

@@ -127,7 +127,7 @@ fn precision_recall(predicted: &[f64], truth: &[f64], tol: f64) -> (f64, f64) {
         while k < predicted.len() && predicted[k] <= r + tol {
             if !used[k] {
                 let d = (predicted[k] - r).abs();
-                if best.map_or(true, |(_, bd)| d < bd) {
+                if best.is_none_or(|(_, bd)| d < bd) {
                     best = Some((k, d));
                 }
             }

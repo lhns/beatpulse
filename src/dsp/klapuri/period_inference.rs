@@ -293,7 +293,7 @@ mod tests {
             if i % beat == 0 {
                 accent[0] = 1.0; // kick in low band
             }
-            if (i + beat / 2) % beat == 0 {
+            if (i + beat / 2).is_multiple_of(beat) {
                 accent[2] = 0.8; // snare in mid band
             }
             bank.tick(accent);

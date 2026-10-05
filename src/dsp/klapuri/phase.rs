@@ -284,7 +284,7 @@ impl KlapuriTracker {
         // start). Small phase corrections are smoothed by averaging
         // halfway between the prior prediction and the new one;
         // half-period jumps snap to the new anchor (octave switch).
-        if *oss_frames > warmup_frames && *oss_frames % inference_interval == 0 {
+        if *oss_frames > warmup_frames && oss_frames.is_multiple_of(inference_interval) {
             if let Some((_raw_idx, raw_tau, raw_tau_frac, _raw_bpm)) = inference.select(bank) {
                 // Push the per-cycle winner into the τ-median ring.
                 self.tau_history[self.tau_history_pos] = raw_tau;
