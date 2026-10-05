@@ -14,10 +14,15 @@ pub mod widgets;
 use std::sync::Arc;
 use std::time::Instant;
 
-use nih_plug::prelude::{Editor, ParamSetter};
-use nih_plug_egui::egui::{self, Color32, RichText};
-use nih_plug_egui::resizable_window::ResizableWindow;
-use nih_plug_egui::{create_egui_editor, widgets as nih_widgets, EguiState};
+use egui::{Color32, RichText};
+use nice_plug::context::gui::GuiContext;
+use nice_plug::editor::dpi::LogicalSize;
+use nice_plug::prelude::{ParamSetter, ResizeHint};
+use nice_plug_egui::resizable_window::ResizableWindow;
+use nice_plug_egui::{
+    create_egui_editor, widgets as nice_widgets, EguiEditor, EguiEditorState, EguiNiceSettings,
+    NiceEguiApp, RepaintNotifier,
+};
 
 use crate::params::{BeatpulseParams, MsgType};
 use crate::shared::{LinkStatus, SharedState};
@@ -40,38 +45,95 @@ const LED_DIM: Color32 = Color32::from_rgb(60, 60, 60);
 const SECTION_HEADER: Color32 = Color32::from_rgb(170, 200, 215);
 const RULE_COLOR: Color32 = Color32::from_rgb(50, 55, 62);
 
-pub fn default_state() -> Arc<EguiState> {
-    EguiState::from_size(WINDOW_W, WINDOW_H)
+const MIN_SIZE: LogicalSize<f32> = LogicalSize::new(MIN_W as f32, MIN_H as f32);
+
+pub fn default_state() -> Arc<EguiEditorState> {
+    let size = LogicalSize::new(WINDOW_W as f32, WINDOW_H as f32);
+    // nice-plug-egui reports the size to the host at 100% until the window
+    // opens, so on a scaled display the host frame starts too small
+    // (nice-plug#75). Start from the physical size at the system DPI.
+    #[cfg(windows)]
+    let size = {
+        // SAFETY: no preconditions.
+        let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() };
+        nice_plug::editor::dpi::Size::Physical(size.to_physical(dpi as f64 / 96.0))
+    };
+    EguiEditorState::from_size(size, 1.0)
 }
 
 pub fn editor(
-    egui_state: Arc<EguiState>,
+    editor_state: Arc<EguiEditorState>,
+    repaint_notifier: RepaintNotifier,
     params: Arc<BeatpulseParams>,
     shared: Arc<SharedState>,
-) -> Option<Box<dyn Editor>> {
-    let editor_state_for_resize = egui_state.clone();
+) -> Option<EguiEditor<BeatpulseEditor>> {
     create_egui_editor(
-        egui_state,
-        (),
-        |ctx, _| apply_visuals(ctx),
-        move |egui_ctx, setter, _state| {
-            apply_visuals(egui_ctx);
-            // ResizableWindow paints a drag-handle at the bottom-right
-            // corner and writes the new size into EguiState (which is
-            // persisted via #[persist]). See ADR-0020.
-            ResizableWindow::new("beatpulse-window")
-                .min_size(egui::Vec2::new(MIN_W as f32, MIN_H as f32))
-                .show(egui_ctx, &editor_state_for_resize, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        build_panel(ui, &params, &shared, setter);
-                    });
-                });
-
-            // Repaint at ~30 Hz so the BPM display, lock LED, peer count
-            // and meter follow the audio thread.
-            egui_ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        editor_state,
+        repaint_notifier,
+        // Lets the host resize the window via its border, down to MIN_SIZE.
+        EguiNiceSettings::new()
+            .with_resize_hint(ResizeHint::resizable().with_min_logical_size(MIN_SIZE)),
+        BeatpulseEditor {
+            params,
+            shared,
+            gui_ctx: None,
         },
     )
+}
+
+pub struct BeatpulseEditor {
+    params: Arc<BeatpulseParams>,
+    shared: Arc<SharedState>,
+    /// Only set while the editor window is open.
+    gui_ctx: Option<GuiContext>,
+}
+
+impl NiceEguiApp for BeatpulseEditor {
+    fn build(
+        &mut self,
+        egui_ctx: egui::Context,
+        gui_ctx: GuiContext,
+        _frame: &mut nice_plug_egui::Frame,
+    ) -> Result<(), nice_plug_egui::baseview::HandlerError> {
+        apply_visuals(&egui_ctx);
+        self.gui_ctx = Some(gui_ctx);
+        Ok(())
+    }
+
+    fn editor_closed(&mut self) {
+        self.gui_ctx = None;
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut nice_plug_egui::Frame) {
+        let Some(gui_ctx) = &self.gui_ctx else {
+            return;
+        };
+        editor_ui(ui, &self.params, &self.shared, &gui_ctx.param_setter());
+
+        // Repaint at ~30 Hz so the BPM display, lock LED, peer count
+        // and meter follow the audio thread.
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(33));
+    }
+}
+
+/// The full editor layout: the panel in a scroll area inside the
+/// resizable window. Public so snapshot tests render what the plugin shows.
+pub fn editor_ui(
+    ui: &mut egui::Ui,
+    params: &BeatpulseParams,
+    shared: &SharedState,
+    setter: &ParamSetter,
+) {
+    // ResizableWindow paints a drag-handle at the bottom-right corner.
+    // See ADR-0020.
+    ResizableWindow::new("beatpulse-window")
+        .min_size(egui::Vec2::new(MIN_W as f32, MIN_H as f32))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                build_panel(ui, params, shared, setter);
+            });
+        });
 }
 
 fn apply_visuals(ctx: &egui::Context) {
@@ -269,14 +331,14 @@ fn build_panel_body(
 
             ui.label("Sensitivity");
             ui.add(
-                nih_widgets::ParamSlider::for_param(&params.sensitivity, setter)
+                nice_widgets::ParamSlider::for_param(&params.sensitivity, setter)
                     .with_width(slider_w),
             );
             ui.end_row();
 
             ui.label("Stability");
             ui.add(
-                nih_widgets::ParamSlider::for_param(&params.tempo_stability, setter)
+                nice_widgets::ParamSlider::for_param(&params.tempo_stability, setter)
                     .with_width(slider_w),
             );
             ui.end_row();
@@ -287,14 +349,14 @@ fn build_panel_body(
 
             ui.label("Silence threshold");
             ui.add(
-                nih_widgets::ParamSlider::for_param(&params.silence_threshold, setter)
+                nice_widgets::ParamSlider::for_param(&params.silence_threshold, setter)
                     .with_width(slider_w),
             );
             ui.end_row();
 
             ui.label("Silence release");
             ui.add(
-                nih_widgets::ParamSlider::for_param(&params.silence_release, setter)
+                nice_widgets::ParamSlider::for_param(&params.silence_release, setter)
                     .with_width(slider_w),
             );
             ui.end_row();
@@ -309,7 +371,7 @@ fn build_panel_body(
         .show(ui, |ui| {
             ui.label("Latency offset");
             ui.add(
-                nih_widgets::ParamSlider::for_param(&params.latency_offset_ms, setter)
+                nice_widgets::ParamSlider::for_param(&params.latency_offset_ms, setter)
                     .with_width(slider_w),
             );
             ui.end_row();
@@ -321,7 +383,7 @@ fn build_panel_body(
             ui.label("Lookahead");
             ui.add_enabled_ui(lookahead_active, |ui| {
                 ui.add(
-                    nih_widgets::ParamSlider::for_param(&params.lookahead_ms, setter)
+                    nice_widgets::ParamSlider::for_param(&params.lookahead_ms, setter)
                         .with_width(slider_w),
                 );
             });
@@ -432,7 +494,7 @@ fn build_panel_body(
 
                     ui.label("Length (ms)");
                     ui.add(
-                        nih_widgets::ParamSlider::for_param(&params.note_length_ms, setter)
+                        nice_widgets::ParamSlider::for_param(&params.note_length_ms, setter)
                             .with_width(slider_w),
                     );
                     ui.end_row();

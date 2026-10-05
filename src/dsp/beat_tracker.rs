@@ -39,7 +39,7 @@ pub struct BeatTracker {
 
 // SAFETY: aubio C objects are not thread-safe, but the audio thread is the
 // only thread that ever touches `BeatTracker` (per spec §12 — UI reads
-// values via the SharedState atomics). The host frameworks (nih-plug)
+// values via the SharedState atomics). The host frameworks (nice-plug)
 // require `Plugin: Send` even though they ensure the audio callback is
 // always invoked on the same thread. This impl makes that single-thread
 // guarantee explicit.

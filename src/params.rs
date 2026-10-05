@@ -9,12 +9,7 @@
 
 //! Plugin parameters. See `BeatPulse-SPEC.md` §7.
 
-use std::sync::Arc;
-
-use nih_plug::prelude::*;
-use nih_plug_egui::EguiState;
-
-use crate::ui;
+use nice_plug::prelude::*;
 
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum OnsetMethod {
@@ -112,10 +107,6 @@ pub enum TrackingMode {
 
 #[derive(Params)]
 pub struct BeatpulseParams {
-    /// Persisted egui editor state (window size, etc.).
-    #[persist = "editor-state"]
-    pub editor_state: Arc<EguiState>,
-
     #[id = "sens"]
     pub sensitivity: FloatParam,
 
@@ -194,7 +185,6 @@ pub struct BeatpulseParams {
 impl Default for BeatpulseParams {
     fn default() -> Self {
         Self {
-            editor_state: ui::default_state(),
             sensitivity: FloatParam::new(
                 "Sensitivity",
                 0.5,

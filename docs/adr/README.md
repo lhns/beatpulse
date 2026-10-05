@@ -28,10 +28,11 @@ a new ADR; existing ADRs are not edited except to mark them Superseded.
 | 0019 | [egui_kittest for UI snapshot testing](0019-egui-kittest-for-ui-snapshots.md) | Accepted          |
 | 0020 | [Editor window is host-resizable](0020-resizable-editor.md) | Accepted          |
 | 0021 | [Resize gives space, doesn't scale UI](0021-resize-not-scale.md) | Accepted          |
-| 0022 | [Host-driven editor resize is unsupported pending nih-plug fix](0022-host-driven-resize-unsupported.md) | Accepted          |
+| 0022 | [Host-driven editor resize is unsupported pending nih-plug fix](0022-host-driven-resize-unsupported.md) | Superseded (0029) |
 | 0023 | [Latency offset is user-tunable, not auto-detected](0023-latency-offset-user-tunable.md) | Accepted          |
 | 0024 | [Tempo stability is its own parameter, decoupled from Sensitivity](0024-tempo-stability-separate-param.md) | Accepted          |
 | 0025 | [Pulse firing requires monotonic forward progress](0025-pulse-firing-monotonic.md) | Accepted          |
 | 0026 | [Lookahead-consensus tracker as opt-in alternative to per-onset PLL feedback](0026-lookahead-consensus-tracker.md) | Accepted          |
 | 0027 | [Aubio `Tempo` as the default tracking mode](0027-aubio-tempo-tracking-mode.md) | Accepted          |
 | 0028 | [Future direction: multi-band-accent + comb-filter resonator tracker](0028-future-multi-band-comb-resonator-tracker.md) | Deferred          |
+| 0029 | [Move from nih-plug to nice-plug](0029-nice-plug.md) | Accepted          |

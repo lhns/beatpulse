@@ -28,6 +28,7 @@ inside the panel still handles overflow.
 `EguiState`'s `size` is persisted via the existing
 `#[persist = "editor-state"]` field on `BeatpulseParams::editor_state`,
 so the resized dimensions survive plugin reload (per-instance state).
+(No longer true since ADR-0029: the host restores the size.)
 
 ## Decision
 

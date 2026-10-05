@@ -9,26 +9,23 @@
 //! reviewer (human or LLM) inspects them.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
 use beatpulse::params::BeatpulseParams;
 use beatpulse::shared::{LinkStatus, SharedState};
-use beatpulse::ui::{build_panel, build_panel_with, PanelOptions, WINDOW_H, WINDOW_W};
+use beatpulse::ui::{
+    build_panel, build_panel_with, editor_ui, PanelOptions, MIN_H, WINDOW_H, WINDOW_W,
+};
 use egui_kittest::Harness;
-use nih_plug::context::gui::GuiContext;
-use nih_plug::params::internals::ParamPtr;
-use nih_plug::prelude::{ParamSetter, PluginApi};
-use nih_plug::wrapper::state::PluginState;
+use nice_plug::prelude::{GuiContextInner, ParamPtr, ParamSetter, PluginApi, PluginState};
 
 /// Stub GuiContext for snapshots. Parameter writes are dropped on the
 /// floor — we render the UI but don't propagate user edits anywhere.
 struct StubGuiContext;
 
-impl GuiContext for StubGuiContext {
+impl GuiContextInner for StubGuiContext {
     fn plugin_api(&self) -> PluginApi {
         PluginApi::Standalone
-    }
-    fn request_resize(&self) -> bool {
-        false
     }
     unsafe fn raw_begin_set_parameter(&self, _param: ParamPtr) {}
     unsafe fn raw_set_parameter_normalized(&self, _param: ParamPtr, _normalized: f32) {}
@@ -41,6 +38,14 @@ impl GuiContext for StubGuiContext {
         }
     }
     fn set_state(&self, _state: PluginState) {}
+    fn request_restart(&self) {}
+}
+
+/// Concurrent wgpu harnesses intermittently crash (access violation) on
+/// Windows, so tests render one at a time.
+fn gpu_lock() -> MutexGuard<'static, ()> {
+    static GPU: Mutex<()> = Mutex::new(());
+    GPU.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn output_dir() -> PathBuf {
@@ -57,6 +62,7 @@ fn save_png(image: &image::RgbaImage, name: &str) {
 
 #[test]
 fn snapshot_midi_expanded() {
+    let _gpu = gpu_lock();
     let params = BeatpulseParams::default();
     let shared = SharedState::default();
     shared.store_bpm(120.0);
@@ -74,11 +80,9 @@ fn snapshot_midi_expanded() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(WINDOW_W as f32, WINDOW_H as f32 + 200.0))
         .wgpu()
-        .build(|ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    build_panel_with(ui, &params, &shared, &setter, opts);
-                });
+        .build_ui(|ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                build_panel_with(ui, &params, &shared, &setter, opts);
             });
         });
 
@@ -89,6 +93,7 @@ fn snapshot_midi_expanded() {
 
 #[test]
 fn snapshot_resized_panel() {
+    let _gpu = gpu_lock();
     // Verify that growing the window gives content more room (level
     // meter and sliders widen) without scaling fonts. Per ADR-0020 /
     // ADR-0021.
@@ -106,11 +111,9 @@ fn snapshot_resized_panel() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(720.0, 800.0))
         .wgpu()
-        .build(|ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    build_panel(ui, &params, &shared, &setter);
-                });
+        .build_ui(|ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                build_panel(ui, &params, &shared, &setter);
             });
         });
 
@@ -121,6 +124,7 @@ fn snapshot_resized_panel() {
 
 #[test]
 fn snapshot_unstable_bpm() {
+    let _gpu = gpu_lock();
     // Verify that `±σ` annotation appears next to the BPM when the
     // PLL is reporting noticeable variance.
     let params = BeatpulseParams::default();
@@ -138,11 +142,9 @@ fn snapshot_unstable_bpm() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(WINDOW_W as f32, WINDOW_H as f32))
         .wgpu()
-        .build(|ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    build_panel(ui, &params, &shared, &setter);
-                });
+        .build_ui(|ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                build_panel(ui, &params, &shared, &setter);
             });
         });
 
@@ -153,6 +155,7 @@ fn snapshot_unstable_bpm() {
 
 #[test]
 fn snapshot_default_panel() {
+    let _gpu = gpu_lock();
     let params = BeatpulseParams::default();
     let shared = SharedState::default();
     // Sample state: live plugin, locked, publishing.
@@ -168,11 +171,9 @@ fn snapshot_default_panel() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(WINDOW_W as f32, WINDOW_H as f32))
         .wgpu()
-        .build(|ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    build_panel(ui, &params, &shared, &setter);
-                });
+        .build_ui(|ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                build_panel(ui, &params, &shared, &setter);
             });
         });
 
@@ -181,8 +182,21 @@ fn snapshot_default_panel() {
     save_png(&image, "ui-default");
 }
 
-// egui-kittest re-exports egui types via egui_kittest::egui? not always.
-// Bring egui in scope via the same crate the build_panel uses, which is
-// nih_plug_egui::egui. Importing nih_plug_egui directly here is the same
-// concrete crate.
-use nih_plug_egui::egui;
+/// The real editor layout at the minimum height.
+#[test]
+fn snapshot_editor_min_height() {
+    let _gpu = gpu_lock();
+    let params = BeatpulseParams::default();
+    let shared = SharedState::default();
+    let stub = StubGuiContext;
+    let setter = ParamSetter::new(&stub);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(WINDOW_W as f32, MIN_H as f32))
+        .wgpu()
+        .build_ui(|ui| editor_ui(ui, &params, &shared, &setter));
+
+    harness.run();
+    let image = harness.render().expect("render failed");
+    save_png(&image, "ui-editor-min-height");
+}

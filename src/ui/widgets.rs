@@ -10,9 +10,8 @@
 //! Custom widget helpers for BeatPulse's editor. Each takes a `ParamSetter`
 //! and writes through it on user interaction. See ADR-0018 / ADR-0019.
 
-use nih_plug::params::Param;
-use nih_plug::prelude::{BoolParam, Enum, EnumParam, IntParam, IntRange, ParamSetter};
-use nih_plug_egui::egui::{self, Color32, Response, Stroke, Ui};
+use egui::{Color32, Response, Stroke, Ui};
+use nice_plug::prelude::{BoolParam, Enum, EnumParam, IntParam, IntRange, Param, ParamSetter};
 
 /// Solid filled circle drawn via Painter — independent of the system
 /// font's Unicode coverage (egui's default font doesn't include U+25CF).

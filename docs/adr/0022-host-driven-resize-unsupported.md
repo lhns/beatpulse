@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, with workaround.
+Superseded by ADR-0029.
 
 ## Context
 
